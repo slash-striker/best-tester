@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090b14">
+    <meta name="description" content="Novex Learner — a personal study vault for recall, writing, and progress.">
+    <title>Novex Learner — personal learning system</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <section id="auth-screen" class="auth-screen" aria-labelledby="auth-title">
+      <div class="auth-card">
+        <a class="brand auth-brand" href="#" aria-label="Novex Learner">
+          <span class="brand-mark">N<span>L</span></span>
+          <span class="brand-name">NOVEX <span>LEARNER</span></span>
+        </a>
+        <div class="auth-eyebrow"><span class="pulse"></span> PERSONAL LEARNING SYSTEM</div>
+        <h1 id="auth-title">Your vault.<br><span>Your progress.</span></h1>
+        <p class="auth-copy">Create a profile or sign in to continue to your study space.</p>
+        <div class="auth-tabs" role="tablist" aria-label="Account action">
+          <button type="button" class="auth-tab" data-auth-mode="login" role="tab">Sign in</button>
+          <button type="button" class="auth-tab" data-auth-mode="signup" role="tab">Create account</button>
+        </div>
+        <form id="auth-form">
+          <label class="field-label" for="auth-username">USERNAME</label>
+          <input id="auth-username" name="username" type="text" required minlength="3" maxlength="24" autocomplete="username" placeholder="Your username">
+          <label class="field-label" for="auth-password">PASSWORD</label>
+          <input id="auth-password" name="password" type="password" required minlength="8" autocomplete="current-password" placeholder="At least 8 characters">
+          <p id="auth-message" class="auth-message" role="status" aria-live="polite"></p>
+          <button id="auth-submit" class="button button-primary auth-submit" type="submit">Sign in →</button>
+        </form>
+        <div class="auth-local-note"><span class="live-dot"></span><span>Local profile only—not secure authentication. The password is hashed, but study data is not encrypted. No cross-device sync or password recovery. Your first profile imports any existing local decks.</span></div>
+      </div>
+    </section>
+    <div class="app-shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="#" data-nav="dashboard" aria-label="Novex Learner dashboard">
+          <span class="brand-mark">N<span>L</span></span>
+          <span class="brand-name">NOVEX <span>LEARNER</span></span>
+        </a>
+        <div class="side-label">YOUR SYSTEM</div>
+        <nav class="side-nav" aria-label="Main navigation">
+          <button class="nav-link active" data-nav="dashboard"><span class="nav-icon">⌂</span>Dashboard</button>
+          <button class="nav-link" data-nav="decks"><span class="nav-icon">▤</span>Study decks <span id="nav-deck-count" class="nav-count">0</span></button>
+          <button class="nav-link" data-nav="progress"><span class="nav-icon">⌁</span>Progress</button>
+          <button class="nav-link" data-nav="settings"><span class="nav-icon">⚙</span>Settings</button>
+        </nav>
+        <div class="sidebar-spacer"></div>
+        <section class="sidebar-card">
+          <span class="side-card-orb">✳</span>
+          <strong>Knowledge is a system.</strong>
+          <p>Build your vault, one connection at a time.</p>
+        </section>
+        <div class="sidebar-foot"><span class="live-dot"></span> LOCAL VAULT <span>•</span> PRIVATE</div>
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="breadcrumb"><span>NOVEX LEARNER</span><i>/</i><strong id="current-section">DASHBOARD</strong></div>
+          <div class="top-actions">
+            <span class="top-date" id="today-label"></span>
+            <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch to light theme" title="Toggle theme">☼</button>
+            <span id="account-name" class="account-name"></span>
+            <button id="logout-button" class="sign-out-button" type="button">Sign out</button>
+            <span class="avatar">NV</span>
+          </div>
+        </header>
+        <main id="view-root" class="view-root"></main>
+      </div>
+    </div>
+    <section id="test-screen" class="test-screen" hidden aria-live="polite"></section>
+    <div id="modal-root"></div>
+    <input id="csv-input" type="file" accept=".csv,text/csv" hidden>
+  </body>
+</html>
