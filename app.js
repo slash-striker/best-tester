@@ -8,12 +8,14 @@ const QUESTION_TYPES = [
   ["rightToLeft", "Right → left"],
   ["write", "Write answer"],
   ["draw", "Draw answer"],
+  ["multipleChoice", "Multiple choice"],
   ["recognition", "Recognition"],
 ];
 const viewRoot = document.querySelector("#view-root");
 const testScreen = document.querySelector("#test-screen");
 const modalRoot = document.querySelector("#modal-root");
 const csvInput = document.querySelector("#csv-input");
+const backupInput = document.querySelector("#backup-input");
 const authScreen = document.querySelector("#auth-screen");
 const authForm = document.querySelector("#auth-form");
 let data = loadData();
@@ -25,17 +27,72 @@ let authMode = accounts.length ? "login" : "signup";
 let authBusy = false;
 let activeView = "dashboard";
 let activeDeckId = data.decks[0]?.id || "";
-let testOptions = { mode: "self", count: 10, minutes: 5, types: { leftToRight: true, rightToLeft: true, write: true, draw: false, recognition: false } };
+let testOptions = { mode: "self", count: 10, minutes: 5, types: { leftToRight: true, rightToLeft: true, write: true, draw: false, multipleChoice: false, recognition: false } };
 let session = null;
 let timerId = null;
 let importDeckId = "";
+let toastTimer = null;
+let sessionTimerEndsAt = 0;
+const ACHIEVEMENTS = [
+  { id: "first-session", name: "First Contact", description: "Complete your first learning session.", icon: "⌁" },
+  { id: "night-owl", name: "Night Owl", description: "Study after midnight.", icon: "☾", secret: true },
+  { id: "unstoppable", name: "Unstoppable", description: "Maintain a 30-day study streak.", icon: "🔥" },
+  { id: "brain-machine", name: "Brain Machine", description: "Answer 100 questions correctly.", icon: "⌘" },
+  { id: "comeback", name: "Comeback", description: "Return after a 7-day absence.", icon: "↻", secret: true },
+  { id: "perfectionist", name: "Perfectionist", description: "Complete 10 perfect sessions.", icon: "✧" },
+  { id: "speed-demon", name: "Speed Demon", description: "Complete a Speed Run.", icon: "⚡" },
+  { id: "survivor", name: "Last One Standing", description: "Survive 10 questions.", icon: "◈" },
+  { id: "collector", name: "Neon Collector", description: "Own 3 shop cosmetics.", icon: "◇" },
+  { id: "variety", name: "Mode Jumper", description: "Complete 3 different game modes.", icon: "⟳" },
+  { id: "secret-code", name: "Ghost in the Machine", description: "Study 你好 and 再见 in one day.", icon: "▣", secret: true },
+];
+const SHOP_ITEMS = [
+  { id: "theme-default", name: "Neon Nexus", description: "The original cyan command environment.", type: "theme", value: "default", price: 0, rarity: "COMMON" },
+  { id: "theme-violet", name: "Afterglow", description: "Violet glass and ultraviolet signals.", type: "theme", value: "violet", price: 120, rarity: "RARE" },
+  { id: "theme-toxic", name: "Toxic Grid", description: "An electric acid-green interface.", type: "theme", value: "toxic", price: 160, rarity: "RARE" },
+  { id: "theme-red", name: "Red Sector", description: "High-alert crimson command deck.", type: "theme", value: "red", price: 180, rarity: "EPIC" },
+  { id: "frame-orbit", name: "Orbital Frame", description: "A rotating holo-ring for your profile.", type: "frame", value: "orbit", price: 90, rarity: "COMMON" },
+  { id: "frame-glitch", name: "Glitch Frame", description: "Chromatic edges. Maximum signal.", type: "frame", value: "glitch", price: 140, rarity: "RARE" },
+  { id: "title-ghost", name: "Ghost Protocol", description: "An encrypted profile title.", type: "title", value: "Ghost Protocol", price: 75, rarity: "COMMON" },
+  { id: "title-neural", name: "Neural Architect", description: "A title for builders of memory.", type: "title", value: "Neural Architect", price: 130, rarity: "RARE" },
+  { id: "streak-freeze", name: "Streak Shield", description: "Automatically protects one missed day.", type: "freeze", value: 1, price: 100, rarity: "UTILITY" },
+];
+const DAILY_CHALLENGES = [
+  { id: "questions", name: "Signal Scan", description: "Answer 10 questions today.", target: 10, metric: "answered", reward: 40 },
+  { id: "correct", name: "Clean Data", description: "Get 5 answers right today.", target: 5, metric: "correct", reward: 45 },
+  { id: "sessions", name: "Stay Connected", description: "Complete 2 sessions today.", target: 2, metric: "sessions", reward: 35 },
+  { id: "modes", name: "Protocol Switch", description: "Try 3 different game modes.", target: 3, metric: "modes", reward: 50 },
+];
 
 function uid() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function createEmptyData() {
-  return { decks: [{ id: uid(), name: "My first deck", pairs: [] }], history: [] };
+  return { decks: [{ id: uid(), name: "My first deck", pairs: [] }], history: [], progression: defaultProgression() };
+}
+
+function defaultProgression() {
+  return {
+    xp: 0,
+    credits: 0,
+    streak: 0,
+    bestStreak: 0,
+    lastStudyDate: "",
+    lastActiveDate: "",
+    freezeCount: 0,
+    perfectSessions: 0,
+    correctTotal: 0,
+    answeredTotal: 0,
+    profile: { displayName: "", title: "", frame: "", avatar: "⌬" },
+    owned: ["theme-default"],
+    equippedTheme: "default",
+    achievements: [],
+    daily: { date: "", answered: 0, correct: 0, sessions: 0, completed: [] },
+    skillPoints: 0,
+    skills: { memory: 0, focus: 0, speed: 0, intelligence: 0 },
+    defeatedBosses: [],
+  };
 }
 
 function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === DATA_KEY) {
@@ -54,6 +111,7 @@ function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === D
         return {
           decks: stored.decks.filter((deck) => deck && typeof deck.id === "string" && Array.isArray(deck.pairs)),
           history: stored.history.filter((record) => record && typeof record.id === "string"),
+          progression: normalizeProgression(stored.progression),
         };
       }
       if (!allowLegacyMigration) throw new Error("This profile's saved study data has an invalid format.");
@@ -77,36 +135,105 @@ function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === D
   return {
     decks: [{ id: uid(), name: migratedPairs.length ? "Chinese vocabulary" : "My first deck", pairs: migratedPairs }],
     history: [],
+    progression: defaultProgression(),
+  };
+}
+
+function normalizeProgression(progress = {}) {
+  const defaults = defaultProgression();
+  const nonnegative = (value) => Math.min(1_000_000_000, Math.max(0, Math.floor(Number(value) || 0)));
+  const dateValue = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+  const profile = progress.profile && typeof progress.profile === "object" ? progress.profile : {};
+  const daily = progress.daily && typeof progress.daily === "object" ? progress.daily : {};
+  const skills = progress.skills && typeof progress.skills === "object" ? progress.skills : {};
+  return {
+    ...defaults,
+    ...progress,
+    xp: nonnegative(progress.xp),
+    credits: nonnegative(progress.credits),
+    streak: nonnegative(progress.streak),
+    bestStreak: nonnegative(progress.bestStreak),
+    lastStudyDate: dateValue(progress.lastStudyDate),
+    lastActiveDate: dateValue(progress.lastActiveDate),
+    equippedTheme: typeof progress.equippedTheme === "string" ? progress.equippedTheme : "default",
+    freezeCount: nonnegative(progress.freezeCount),
+    perfectSessions: nonnegative(progress.perfectSessions),
+    correctTotal: nonnegative(progress.correctTotal),
+    answeredTotal: nonnegative(progress.answeredTotal),
+    skillPoints: nonnegative(progress.skillPoints),
+    profile: {
+      displayName: typeof profile.displayName === "string" ? profile.displayName.slice(0, 28) : "",
+      title: typeof profile.title === "string" ? profile.title.slice(0, 40) : "",
+      frame: typeof profile.frame === "string" ? profile.frame : "",
+      avatar: typeof profile.avatar === "string" ? profile.avatar : "⌬",
+    },
+    daily: {
+      ...defaults.daily,
+      ...daily,
+      date: dateValue(daily.date),
+      answered: nonnegative(daily.answered),
+      correct: nonnegative(daily.correct),
+      sessions: nonnegative(daily.sessions),
+      modes: Array.isArray(daily.modes) ? [...new Set(daily.modes.filter((mode) => typeof mode === "string"))] : [],
+      completed: Array.isArray(daily.completed) ? [...new Set(daily.completed.filter((id) => typeof id === "string"))] : [],
+      bonusClaimed: Boolean(daily.bonusClaimed),
+    },
+    skills: Object.fromEntries(Object.keys(defaults.skills).map((skill) => [skill, Math.min(5, nonnegative(skills[skill]))])),
+    achievements: Array.isArray(progress.achievements) ? [...new Set(progress.achievements.filter((id) => typeof id === "string"))] : [],
+    owned: Array.isArray(progress.owned) ? [...new Set(["theme-default", ...progress.owned])] : defaults.owned,
+    defeatedBosses: Array.isArray(progress.defeatedBosses) ? [...new Set(progress.defeatedBosses.map(Number).filter((number) => Number.isInteger(number) && number > 0))] : [],
   };
 }
 
 function loadSettings(storageKey = SETTINGS_KEY) {
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
-    return {
-      theme: stored.theme === "light" ? "light" : "dark",
-      grid: stored.grid !== false,
-      ink: typeof stored.ink === "string" ? stored.ink : "#54f4e3",
-      background: typeof stored.background === "string" ? stored.background : "#101624",
-      brush: Math.min(24, Math.max(1, Number(stored.brush) || 5)),
-      canvasHeight: Math.min(440, Math.max(160, Number(stored.canvasHeight) || 250)),
-    };
+    return normalizeSettings(stored);
   } catch (error) {
     console.error("Could not load appearance preferences.", error);
-    return { theme: "dark", grid: true, ink: "#54f4e3", background: "#101624", brush: 5, canvasHeight: 250 };
+    return normalizeSettings({});
   }
 }
 
+function normalizeSettings(stored = {}) {
+  const color = (value, fallback) => typeof value === "string" && /^#[\da-f]{6}$/i.test(value) ? value : fallback;
+  return {
+    theme: stored.theme === "light" ? "light" : "dark",
+    grid: stored.grid !== false,
+    ink: color(stored.ink, "#54f4e3"),
+    background: color(stored.background, "#101624"),
+    brush: Math.min(24, Math.max(1, Number(stored.brush) || 5)),
+    canvasHeight: Math.min(440, Math.max(160, Number(stored.canvasHeight) || 250)),
+  };
+}
+
 function persist() {
-  if (!currentAccount) return;
+  if (!currentAccount) return false;
+  const suffix = encodeURIComponent(currentAccount.username.toLowerCase());
+  const entries = [
+    [`novex-learner-data-${suffix}`, JSON.stringify(data)],
+    [`novex-learner-settings-${suffix}`, JSON.stringify(settings)],
+    [`novex-learner-test-options-${suffix}`, JSON.stringify(testOptions)],
+  ];
+  let previous;
   try {
-    const suffix = encodeURIComponent(currentAccount.username.toLowerCase());
-    localStorage.setItem(`novex-learner-data-${suffix}`, JSON.stringify(data));
-    localStorage.setItem(`novex-learner-settings-${suffix}`, JSON.stringify(settings));
-    localStorage.setItem(`novex-learner-test-options-${suffix}`, JSON.stringify(testOptions));
+    previous = entries.map(([key]) => localStorage.getItem(key));
+    entries.forEach(([key, value]) => localStorage.setItem(key, value));
+    return true;
   } catch (error) {
     console.error("Could not save your Novex Learner data.", error);
-    showToast("Browser storage is full. Export your decks to keep a backup.", true);
+    if (previous) {
+      entries.forEach(([key], index) => {
+        try {
+          if (previous[index] === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, previous[index]);
+        } catch (rollbackError) {
+          console.error(`Could not restore the previous value for ${key}.`, rollbackError);
+        }
+      });
+    }
+    showToast("Could not save your profile. Check browser storage and keep a backup.", true);
+    return false;
   }
 }
 
@@ -132,6 +259,7 @@ function accountStorageKey(kind, username) {
 }
 
 function normalizeData() {
+  data.progression = normalizeProgression(data.progression);
   data.decks = data.decks.filter((deck) => deck && typeof deck.id === "string" && Array.isArray(deck.pairs)).map((deck) => ({
     ...deck,
     pairs: deck.pairs
@@ -145,16 +273,20 @@ function loadTestOptions(username) {
   try {
     const stored = JSON.parse(localStorage.getItem(accountStorageKey("test-options", username)) || "null");
     if (!stored) return;
-    testOptions = {
-      mode: stored.mode === "timed" ? "timed" : "self",
-      count: Math.max(1, Number(stored.count) || 10),
-      minutes: Math.min(180, Math.max(1, Number(stored.minutes) || 5)),
-      types: Object.fromEntries(QUESTION_TYPES.map(([key]) => [key, Boolean(stored.types?.[key])])),
-    };
+    testOptions = normalizeTestOptions(stored);
   } catch (error) {
     console.error("Could not load this profile's test preferences.", error);
     throw new Error("Could not read this profile's test preferences.");
   }
+}
+
+function normalizeTestOptions(stored = {}) {
+  return {
+    mode: ["timed", "speed", "survival", "memory", "perfect"].includes(stored.mode) ? stored.mode : "self",
+    count: Math.max(1, Math.min(1000, Number(stored.count) || 10)),
+    minutes: Math.min(180, Math.max(1, Number(stored.minutes) || 5)),
+    types: Object.fromEntries(QUESTION_TYPES.map(([key]) => [key, Boolean(stored.types?.[key])])),
+  };
 }
 
 async function passwordHash(password, encodedSalt) {
@@ -234,7 +366,7 @@ async function handleAuthSubmit(form) {
       data = loadData(accountStorageKey("data", profile.username), false);
       settings = loadSettings(accountStorageKey("settings", profile.username));
     }
-    testOptions = { mode: "self", count: 10, minutes: 5, types: { leftToRight: true, rightToLeft: true, write: true, draw: false, recognition: false } };
+    testOptions = { mode: "self", count: 10, minutes: 5, types: { leftToRight: true, rightToLeft: true, write: true, draw: false, multipleChoice: false, recognition: false } };
     if (!signingUp) loadTestOptions(profile.username);
     currentAccount = { username: profile.username };
     normalizeData();
@@ -287,7 +419,15 @@ function allQuestions(deck, types = testOptions.types) {
     if (types.rightToLeft) add("rightToLeft", false, "RIGHT → LEFT");
     if (types.write) add("write", Math.random() < 0.5, "WRITE · RANDOM DIRECTION");
     if (types.draw) add("draw", Math.random() < 0.5, "HANDWRITE · RANDOM DIRECTION");
+    if (types.multipleChoice && deck.pairs.length > 1) add("multipleChoice", Math.random() < 0.5, "MULTIPLE CHOICE · RANDOM DIRECTION");
     if (types.recognition) add("recognition", Math.random() < 0.5, "RECOGNITION");
+  }
+  for (const question of variants) {
+    if (question.type !== "multipleChoice") continue;
+    const distractors = deck.pairs
+      .filter((pair) => pair.id !== question.pairId)
+      .map((pair) => question.prompt === pair.left ? pair.right : pair.left);
+    question.choices = shuffle([question.answer, ...shuffle([...new Set(distractors.filter((choice) => choice !== question.answer))]).slice(0, 3)]);
   }
   return variants;
 }
@@ -300,14 +440,23 @@ function shuffle(items) {
   return items;
 }
 
-function buildQuestionSet(deck, types, requested) {
-  const byPair = new Map(deck.pairs.map((pair) => [pair.id, []]));
-  allQuestions(deck, types).forEach((question) => byPair.get(question.pairId)?.push(question));
-  for (const group of byPair.values()) shuffle(group);
+function buildQuestionSet(deck, types, requested, repeatAfterPool = false) {
+  const fillPool = () => {
+    const groups = new Map(deck.pairs.map((pair) => [pair.id, []]));
+    allQuestions(deck, types).forEach((question) => groups.get(question.pairId)?.push(question));
+    for (const group of groups.values()) shuffle(group);
+    return groups;
+  };
+  let byPair = fillPool();
   const result = [];
   while (result.length < requested) {
-    const groups = shuffle([...byPair.values()].filter((group) => group.length));
-    if (!groups.length) break;
+    let groups = shuffle([...byPair.values()].filter((group) => group.length));
+    if (!groups.length) {
+      if (!repeatAfterPool) break;
+      byPair = fillPool();
+      groups = shuffle([...byPair.values()].filter((group) => group.length));
+      if (!groups.length) break;
+    }
     for (const group of groups) {
       if (result.length >= requested) break;
       result.push(group.pop());
@@ -335,7 +484,7 @@ function statsFor(records) {
 }
 
 function updateHeader() {
-  const labels = { dashboard: "DASHBOARD", decks: "STUDY DECKS", deck: "DECK / STUDY", progress: "PROGRESS", settings: "SETTINGS" };
+  const labels = { dashboard: "NEURO // OS", decks: "STUDY DECKS", deck: "DECK / STUDY", progress: "PROGRESS", settings: "SETTINGS", arcade: "ARCADE", shop: "NEON MARKET", profile: "OPERATOR PROFILE" };
   document.querySelector("#current-section").textContent = labels[activeView] || "DASHBOARD";
   document.querySelector("#nav-deck-count").textContent = data.decks.length;
   document.querySelector("#today-label").textContent = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(new Date()).toUpperCase();
@@ -343,6 +492,8 @@ function updateHeader() {
   document.querySelector("#account-name").hidden = !currentAccount;
   document.querySelector("#logout-button").hidden = !currentAccount;
   document.body.dataset.theme = settings.theme;
+  document.body.dataset.skin = data.progression?.equippedTheme || "default";
+  document.body.dataset.frame = data.progression?.profile?.frame || "";
   document.querySelector("#theme-toggle").textContent = settings.theme === "dark" ? "☼" : "☾";
   document.querySelector("#theme-toggle").setAttribute("aria-label", `Switch to ${settings.theme === "dark" ? "light" : "dark"} theme`);
   document.querySelectorAll("[data-nav]").forEach((button) => {
@@ -357,6 +508,9 @@ function setView(view) {
   else if (view === "decks") renderDecks();
   else if (view === "deck") renderDeck();
   else if (view === "progress") renderProgress();
+  else if (view === "arcade") renderArcade();
+  else if (view === "shop") renderShop();
+  else if (view === "profile") renderProfile();
   else renderSettings();
 }
 
@@ -398,10 +552,14 @@ function renderCurrentView() {
   else if (activeView === "decks") renderDecks();
   else if (activeView === "deck") renderDeck();
   else if (activeView === "progress") renderProgress();
+  else if (activeView === "arcade") renderArcade();
+  else if (activeView === "shop") renderShop();
+  else if (activeView === "profile") renderProfile();
   else renderSettings();
 }
 
 function renderDashboard() {
+  resetDailyIfNeeded();
   const stats = statsFor(data.history);
   const deck = activeDeck();
   const records = deck ? data.history.filter((record) => record.deckId === deck.id) : [];
@@ -411,10 +569,16 @@ function renderDashboard() {
     <section class="welcome-row">
       <div>
         <div class="eyebrow"><span class="pulse"></span> PERSONAL LEARNING SYSTEM <span class="eyebrow-line"></span> ONLINE</div>
-        <h1>Welcome back,<br><span>knowledge seeker.</span></h1>
-        <p class="lead">Build your vault. Sharpen your recall. Keep moving forward.</p>
+        <h1>Welcome back,<br><span>${escapeHtml(data.progression.profile.displayName || currentAccount?.username || "knowledge seeker")}.</span></h1>
+        <p class="lead">NEURO // OS online. Build your vault, keep your streak alive, and earn your next upgrade.</p>
       </div>
       <div class="hero-orbit" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core">NV</div><span class="orbit-dot dot-a"></span><span class="orbit-dot dot-b"></span></div>
+    </section>
+    ${renderLevelBar()}
+    <section class="gamification-strip">
+      <article class="streak-card ${streakClass()}"><div class="streak-flame" aria-hidden="true">♨</div><div><small>ACTIVE STREAK</small><strong>${data.progression.streak} <span>${data.progression.streak === 1 ? "day" : "days"}</span></strong><p>Best: ${data.progression.bestStreak} ${data.progression.bestStreak === 1 ? "day" : "days"}</p></div><i class="streak-orbit"></i></article>
+      <article class="daily-card"><div class="section-heading"><div><span class="section-code">DAILY UPLINK · ${escapeHtml(todayKey())}</span><h2>Missions</h2></div><span class="coin-chip">◈ ${data.progression.credits}</span></div>${dailyChallengesMarkup()}<button class="text-button" data-nav="arcade">All challenges & achievements ↗</button></article>
+      <article class="profile-card-mini"><div class="section-code">OPERATOR PROFILE</div><div class="profile-mini-row"><span class="profile-avatar">${escapeHtml(data.progression.profile.avatar || "⌬")}</span><div><strong>${escapeHtml(data.progression.profile.displayName || currentAccount?.username || "Operator")}</strong><small>${escapeHtml(data.progression.profile.title || "New Recruit")}</small></div></div><div class="profile-mini-meta"><span>◈ ${data.progression.credits} credits</span><span>✦ ${unlockedAchievementCount()} achievements</span></div><button class="text-button" data-nav="profile">Customize profile ↗</button></article>
     </section>
     <section class="metric-grid">
       ${metricCard("TOTAL ANSWERED", stats.submitted, "⌘", "all decks")}
@@ -432,6 +596,7 @@ function renderDashboard() {
             <button type="button" class="button button-quiet" data-open-deck="${deck.id}">Manage deck ↗</button>
           </div>
           ${testSetup(deck)}
+          ${renderBossPanel()}
         ` : emptyState("No study decks yet", "Create a deck, add a few pairs, and your learning system is ready.", "Create your first deck", "new-deck")}
       </section>
       <section class="panel side-panel">
@@ -471,9 +636,17 @@ function emptyState(title, text, label, action) {
 
 function testSetup(deck) {
   const available = allQuestions(deck).length;
-  const selectedTypes = QUESTION_TYPES.filter(([key]) => testOptions.types[key]).length;
-  const capacity = deck.pairs.length * selectedTypes;
+  const capacity = available;
+  const enabledTypeCount = QUESTION_TYPES.filter(([key]) => testOptions.types[key]).length;
+  const multipleChoiceHint = testOptions.types.multipleChoice && deck.pairs.length < 2 ? " Add a second pair to enable multiple choice." : "";
   const safeCount = Math.max(1, Math.min(Number(testOptions.count) || 1, capacity || 1));
+  const setupHint = capacity
+    ? `Up to ${capacity} unique question variants · random order · pairs are spread out.${testOptions.mode === "timed" && data.progression.skills.focus ? ` Focus tree adds ${data.progression.skills.focus} minute${data.progression.skills.focus === 1 ? "" : "s"}.` : ""}${multipleChoiceHint}`
+    : !deck.pairs.length
+      ? "Add at least one pair to begin."
+      : !enabledTypeCount
+        ? "Enable at least one question type."
+        : "Multiple choice requires at least two pairs.";
   const typeOptions = QUESTION_TYPES.map(([key, label]) => `
     <label class="type-check"><input type="checkbox" data-question-type="${key}" ${testOptions.types[key] ? "checked" : ""}><span class="check-box"></span><span>${label}</span></label>`).join("");
   return `
@@ -482,12 +655,101 @@ function testSetup(deck) {
       <div class="type-list">${typeOptions}</div>
       <div class="setup-row">
         <label class="setting-field"><span>QUESTIONS</span><div class="setting-input"><input id="setup-count" type="number" min="1" max="${Math.max(1, capacity)}" value="${safeCount}"><small>max ${capacity}</small></div></label>
-        <label class="setting-field"><span>SESSION MODE</span><select id="setup-mode"><option value="self" ${testOptions.mode === "self" ? "selected" : ""}>Self-test</option><option value="timed" ${testOptions.mode === "timed" ? "selected" : ""}>Timed test</option></select></label>
+        <label class="setting-field"><span>SESSION MODE</span><select id="setup-mode">${modeOptionsMarkup()}</select></label>
         ${testOptions.mode === "timed" ? `<label class="setting-field"><span>TIME LIMIT</span><div class="setting-input"><input id="setup-minutes" type="number" min="1" max="180" value="${Math.min(180, Math.max(1, testOptions.minutes))}"><small>min</small></div></label>` : ""}
       </div>
-      <p class="setup-hint" id="setup-hint">${capacity ? `Up to ${capacity} unique question variants · random order · pairs are spread out.` : "Enable at least one question type and add a pair to begin."}${available < capacity ? "" : ""}</p>
+      <p class="setup-hint" id="setup-hint">${setupHint}</p>
       <button class="button button-primary start-button" data-action="start-test" ${capacity ? "" : "disabled"}>INITIALIZE TEST <span>→</span></button>
     </div>`;
+}
+
+function modeOptionsMarkup() {
+  const modes = [
+    ["self", "Self-test"],
+    ["timed", "Timed test"],
+    ["speed", "Speed Run · 60 sec"],
+    ["survival", "Survival"],
+    ["memory", "Memory Rush"],
+    ["perfect", "Perfect Run"],
+  ];
+  return modes.map(([value, label]) => `<option value="${value}" ${testOptions.mode === value ? "selected" : ""}>${label}</option>`).join("");
+}
+
+function todayKey(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function resetDailyIfNeeded() {
+  if (data.progression.daily.date === todayKey()) return;
+  data.progression.daily = { date: todayKey(), answered: 0, correct: 0, sessions: 0, modes: [], completed: [], bonusClaimed: false };
+  persist();
+}
+
+function challengeProgress(challenge) {
+  const daily = data.progression.daily;
+  if (challenge.metric === "modes") return new Set(daily.modes || []).size;
+  return daily[challenge.metric] || 0;
+}
+
+function dailyChallengesMarkup() {
+  resetDailyIfNeeded();
+  return `<div class="challenge-list">${DAILY_CHALLENGES.map((challenge) => {
+    const progress = challengeProgress(challenge);
+    const completed = data.progression.daily.completed.includes(challenge.id);
+    const pct = Math.min(100, Math.round(progress / challenge.target * 100));
+    return `<article class="challenge-row ${completed ? "challenge-complete" : ""}"><span class="challenge-check">${completed ? "✓" : "·"}</span><div class="challenge-body"><div><strong>${challenge.name}</strong><small>${challenge.description}</small></div><b>${Math.min(progress, challenge.target)}/${challenge.target}</b><div class="challenge-track"><i style="width:${pct}%"></i></div></div><span class="challenge-reward">+${challenge.reward}</span></article>`;
+  }).join("")}${data.progression.daily.bonusClaimed ? '<div class="daily-bonus-earned">ALL DAILY MISSIONS COMPLETE · +50 BONUS CLAIMED</div>' : ""}</div>`;
+}
+
+function currentLevel() {
+  return Math.floor(data.progression.xp / 150) + 1;
+}
+
+function levelProgress() {
+  return data.progression.xp % 150;
+}
+
+function renderLevelBar() {
+  const level = currentLevel();
+  const pct = Math.round(levelProgress() / 150 * 100);
+  return `<section class="level-strip"><div class="level-badge"><small>LVL</small><strong>${level}</strong></div><div class="level-progress"><div class="level-label"><strong>${escapeHtml(data.progression.profile.title || titleForLevel(level))}</strong><span>${data.progression.xp} XP · ${150 - levelProgress()} XP TO LEVEL ${level + 1}</span></div><div class="xp-track"><i style="width:${pct}%"></i></div></div><div class="currency-badge">◈ <strong>${data.progression.credits}</strong><small>CREDITS</small></div></section>`;
+}
+
+function titleForLevel(level) {
+  if (level >= 25) return "Neural Legend";
+  if (level >= 15) return "Memory Architect";
+  if (level >= 10) return "Signal Runner";
+  if (level >= 5) return "Data Seeker";
+  return "New Recruit";
+}
+
+function streakClass() {
+  const streak = data.progression.streak;
+  return streak >= 365 ? "streak-legendary" : streak >= 100 ? "streak-holo" : streak >= 30 ? "streak-aura" : streak >= 14 ? "streak-electric" : streak >= 7 ? "streak-neon" : streak >= 3 ? "streak-lit" : "";
+}
+
+function unlockedAchievementCount() {
+  return data.progression.achievements.length;
+}
+
+function bossNumber() {
+  return Math.floor(currentLevel() / 5);
+}
+
+function bossIsAvailable() {
+  const boss = bossNumber();
+  return boss >= 1 && !data.progression.defeatedBosses.includes(boss);
+}
+
+function renderBossPanel() {
+  if (!bossIsAvailable()) return "";
+  const deck = activeDeck();
+  return `<div class="boss-panel"><span class="boss-sigil">⬡</span><div><span class="section-code">BOSS SIGNAL · DISTRICT ${bossNumber()}</span><strong>${escapeHtml(deck?.name || "Your toughest topic")}</strong><small>Face five hits drawn from your weakest pairs when available. Victory earns 100 credits and 80 XP.</small></div><button class="button button-danger" data-action="boss-fight">CHALLENGE →</button></div>`;
+}
+
+function themeName(theme) {
+  return { default: "Neon Nexus", violet: "Afterglow", toxic: "Toxic Grid", red: "Red Sector" }[theme] || "Neon Nexus";
 }
 
 function renderDecks() {
@@ -540,6 +802,142 @@ function renderProgress() {
     <div class="progress-grid"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">PER-DECK ACCURACY</span><h2>Deck performance</h2></div></div><div class="progress-decks">${deckTiles || '<div class="empty-note">Create a deck to begin.</div>'}</div><div class="chart-heading"><div><span class="section-code">HISTORICAL RESULTS</span><h2>Test history</h2></div></div><div class="history-list">${records.map((record) => historyRow(record)).join("") || '<div class="empty-note">Completed tests will appear here automatically.</div>'}</div></section><aside class="panel side-panel weak-panel"><div class="section-heading"><div><span class="section-code">SIGNAL ANALYSIS</span><h2>Weakest pairs</h2></div><span class="neon-tag">FOCUS</span></div>${renderWeakPairs(20)}</aside></div>`;
 }
 
+function renderArcade() {
+  const records = data.history;
+  const perfects = records.filter((record) => record.perfect).length;
+  const modes = [
+    { id: "speed", name: "Speed Run", length: `${60 + data.progression.skills.speed * 5} SECONDS`, icon: "⚡", copy: "Answer as many as you can before the clock burns out.", reward: "Fast answers · XP burst" },
+    { id: "survival", name: "Survival", length: "UNTIL A MISS", icon: "◈", copy: "One mistake ends the run. How long can you stay sharp?", reward: "Streak bonus · score chase" },
+    { id: "memory", name: "Memory Rush", length: "MEMORIZE → RECALL", icon: "◉", copy: "Study your pairs during a short preview, then recall them from memory.", reward: "Memory XP · no peeking" },
+    { id: "perfect", name: "Perfect Run", length: "NO MISTAKES", icon: "✧", copy: "Finish your full set without a single incorrect answer.", reward: "Perfect-run bonus" },
+  ];
+  viewRoot.innerHTML = `
+    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> NEURAL ARCADE / TRAINING PROTOCOLS</div><h1>Choose your <span>challenge.</span></h1><p class="lead">Different pressure, same goal: make the knowledge stick.</p></div><div class="coin-chip large">◈ ${data.progression.credits} CREDITS</div></section>
+    <section class="arcade-grid">${modes.map((mode) => `<article class="arcade-mode mode-${mode.id}"><div class="arcade-mode-top"><span class="arcade-icon">${mode.icon}</span><span class="mode-length">${mode.length}</span></div><h2>${mode.name}</h2><p>${mode.copy}</p><div class="arcade-reward">${mode.reward}</div><button class="button button-primary" data-start-mode="${mode.id}" ${activeDeck()?.pairs.length ? "" : "disabled"}>LAUNCH PROTOCOL →</button></article>`).join("")}</section>
+    <div class="arcade-lower"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">MILESTONES / ${unlockedAchievementCount()} UNLOCKED</span><h2>Achievement matrix</h2></div><span class="neon-tag">SECRET SIGNALS INCLUDED</span></div>${achievementGrid()}</section><aside class="panel side-panel"><div class="section-heading"><div><span class="section-code">DAILY UPLINK</span><h2>Today's missions</h2></div></div>${dailyChallengesMarkup()}<div class="mode-record"><span class="section-code">PERFECT RUNS</span><strong>${perfects} <small>clean sessions</small></strong></div></aside></div>
+  `;
+}
+
+function achievementGrid() {
+  return `<div class="achievement-grid">${ACHIEVEMENTS.map((achievement) => {
+    const unlocked = data.progression.achievements.includes(achievement.id);
+    const secretHidden = achievement.secret && !unlocked;
+    return `<article class="achievement-card ${unlocked ? "unlocked" : "locked"}"><span class="achievement-icon">${secretHidden ? "?" : achievement.icon}</span><div><strong>${secretHidden ? "Unknown signal" : achievement.name}</strong><small>${secretHidden ? "A hidden protocol waits to be discovered." : achievement.description}</small></div><span class="achievement-state">${unlocked ? "UNLOCKED" : "LOCKED"}</span></article>`;
+  }).join("")}</div>`;
+}
+
+function renderShop() {
+  const items = SHOP_ITEMS;
+  viewRoot.innerHTML = `
+    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> COSMETIC EXCHANGE / NO REAL-MONEY ITEMS</div><h1>Neon <span>market.</span></h1><p class="lead">Earn credits from learning. Spend them on themes, profile flair, or a streak shield.</p></div><div class="coin-chip large">◈ ${data.progression.credits} CREDITS</div></section>
+    <div class="shop-note"><span>◇</span><p>Every item uses in-app credits only. No paid currency, random crates, or surprise odds.</p></div>
+    <section class="shop-grid">${items.map((item) => {
+      const owned = data.progression.owned.includes(item.id);
+      const equipped = (item.type === "theme" && data.progression.equippedTheme === item.value) ||
+        (item.type === "frame" && data.progression.profile.frame === item.value) ||
+        (item.type === "title" && data.progression.profile.title === item.value);
+      const canAfford = data.progression.credits >= item.price;
+      const action = item.type === "freeze"
+        ? `BUY SHIELD · ◈ ${item.price} (${data.progression.freezeCount} owned)`
+        : equipped ? "EQUIPPED" : owned ? "EQUIP ITEM" : `◈ ${item.price}`;
+      const isDisabled = item.type === "freeze" ? !canAfford : equipped || (!owned && !canAfford);
+      return `<article class="shop-item ${owned ? "item-owned" : ""}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><div class="shop-preview preview-${escapeHtml(item.value)}">${item.type === "theme" ? "NV" : item.type === "frame" ? "⌬" : item.type === "freeze" ? "♨" : "✦"}</div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description)}</p><button class="button ${owned ? "button-quiet" : "button-primary"} shop-buy" data-shop-item="${item.id}" ${isDisabled ? "disabled" : ""}>${action}</button></article>`;
+    }).join("")}</section>`;
+}
+
+function handleShopPurchase(itemId) {
+  const item = SHOP_ITEMS.find((shopItem) => shopItem.id === itemId);
+  if (!item) return;
+  const progression = data.progression;
+  const owned = progression.owned.includes(item.id);
+  if (item.type === "freeze") {
+    if (progression.credits < item.price) return showToast("Not enough credits for a streak shield.", true);
+    progression.credits -= item.price;
+    progression.freezeCount += 1;
+    showToast("STREAK SHIELD ACQUIRED · ready when you need it");
+  } else if (owned) {
+    if (item.type === "theme") progression.equippedTheme = item.value;
+    if (item.type === "frame") progression.profile.frame = item.value;
+    if (item.type === "title") progression.profile.title = item.value;
+    showToast(`${item.name.toUpperCase()} EQUIPPED`);
+  } else {
+    if (progression.credits < item.price) return showToast("Not enough credits for this item.", true);
+    progression.credits -= item.price;
+    progression.owned.push(item.id);
+    if (item.type === "theme") progression.equippedTheme = item.value;
+    if (item.type === "frame") progression.profile.frame = item.value;
+    if (item.type === "title") progression.profile.title = item.value;
+    showToast(`${item.name.toUpperCase()} UNLOCKED · ITEM ADDED TO PROFILE`);
+  }
+  checkAchievements();
+  persist();
+  updateHeader();
+  renderShop();
+}
+
+function investSkill(skill) {
+  if (!Object.hasOwn(data.progression.skills, skill) || data.progression.skills[skill] >= 5 || data.progression.skillPoints <= 0) return;
+  data.progression.skills[skill] += 1;
+  data.progression.skillPoints -= 1;
+  persist();
+  renderProfile();
+  showToast(`${skill.toUpperCase()} NODE UNLOCKED`);
+}
+
+function startBossFight() {
+  const deck = activeDeck();
+  if (!deck || !bossIsAvailable()) return;
+  const weakIds = weakestPairIds(deck.id, 5);
+  const bossDeck = weakIds.length
+    ? { ...deck, pairs: deck.pairs.filter((pair) => weakIds.includes(pair.id)) }
+    : deck;
+  const originalDeck = deck;
+  const previousDeck = deck;
+  activeDeckId = bossDeck.id;
+  const start = () => {
+    const bossTypes = { leftToRight: true, rightToLeft: true, write: true, draw: false, multipleChoice: false, recognition: false };
+    const questions = buildQuestionSet(bossDeck, bossTypes, 100, true);
+    if (!questions.length) {
+      activeDeckId = previousDeck.id;
+      return showToast("Add at least one pair before challenging the boss.", true);
+    }
+    session = {
+      id: uid(), deckId: originalDeck.id, deckName: originalDeck.name, mode: "boss",
+      questions, index: 0, finished: false, startedAt: Date.now(), durationMs: 0,
+      secondsRemaining: 0, currentShownAt: Date.now(), historySaved: false,
+      phase: "recall", bossNumber: bossNumber(), bossHealth: 5, bossMaxHealth: 5, playerHealth: 3,
+    };
+    document.querySelector(".app-shell").hidden = true;
+    testScreen.hidden = false;
+    renderQuestion();
+  };
+  start();
+  activeDeckId = previousDeck.id;
+}
+
+function weakestPairIds(deckId, limit) {
+  const misses = new Map();
+  for (const record of data.history.filter((item) => item.deckId === deckId)) {
+    for (const question of record.questions || []) {
+      if (question.status !== "incorrect") continue;
+      misses.set(question.pairId, (misses.get(question.pairId) || 0) + 1);
+    }
+  }
+  return [...misses.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
+}
+
+function renderProfile() {
+  const progression = data.progression;
+  const level = currentLevel();
+  const streak = progression.streak;
+  viewRoot.innerHTML = `
+    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> OPERATOR ID / ${escapeHtml(currentAccount?.username || "")}</div><h1>Your personal <span>signal.</span></h1><p class="lead">Shape your profile, track your evolution, and spend skill points on your learning style.</p></div><button class="button button-quiet" data-nav="shop">Visit neon market →</button></section>
+    <section class="profile-hero ${streakClass()}"><div class="profile-avatar profile-avatar-large">${escapeHtml(progression.profile.avatar || "⌬")}</div><div class="profile-identity"><span class="section-code">LEVEL ${level} OPERATOR</span><h2>${escapeHtml(progression.profile.displayName || currentAccount?.username || "Operator")}</h2><p>${escapeHtml(progression.profile.title || titleForLevel(level))}</p><div class="profile-xp-track"><i style="width:${Math.round(levelProgress() / 150 * 100)}%"></i></div><small>${progression.xp} XP TOTAL</small></div><div class="profile-streak"><span>♨</span><strong>${streak}</strong><small>DAY STREAK</small><em>RECORD ${progression.bestStreak}</em></div></section>
+    <div class="profile-grid"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">OPERATOR CUSTOMIZATION</span><h2>Edit profile</h2></div></div><form id="profile-form" class="profile-form"><label class="setting-field"><span>DISPLAY NAME</span><input name="displayName" maxlength="28" value="${escapeHtml(progression.profile.displayName || "")}" placeholder="${escapeHtml(currentAccount?.username || "Operator")}"></label><label class="setting-field"><span>AVATAR SYMBOL</span><select name="avatar">${["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍"].map((avatar) => `<option ${progression.profile.avatar === avatar ? "selected" : ""}>${avatar}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE TITLE</span><select name="title"><option value="">${escapeHtml(titleForLevel(level))} (default)</option>${SHOP_ITEMS.filter((item) => item.type === "title" && progression.owned.includes(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.title === item.value ? "selected" : ""}>${escapeHtml(item.value)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE FRAME</span><select name="frame"><option value="">Default frame</option>${SHOP_ITEMS.filter((item) => item.type === "frame" && progression.owned.includes(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.frame === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="button button-primary" type="submit">SAVE PROFILE →</button></form></section>
+    <section class="panel skill-panel"><div class="section-heading"><div><span class="section-code">NEURAL SKILL TREE</span><h2>Invest points</h2></div><span class="skill-points">${progression.skillPoints} SP</span></div><p class="skill-copy">Earn one point per level. Each path has five permanent learning bonuses.</p><div class="skill-list">${Object.entries({ memory: ["MEMORY", "+2 seconds to Memory Rush per node"], focus: ["FOCUS", "+1 minute to timed tests per node"], speed: ["SPEED", "+5 seconds and +3 XP in Speed Run per node"], intelligence: ["INTELLIGENCE", "+2 XP per correct answer per node"] }).map(([key, [label, benefit]]) => `<div class="skill-row"><div><strong>${label}</strong><small>${progression.skills[key]} / 5 nodes · ${benefit}</small></div><button class="skill-node" data-skill="${key}" ${progression.skillPoints <= 0 || progression.skills[key] >= 5 ? "disabled" : ""}>＋</button></div>`).join("")}</div></section>
+    <section class="panel trophy-panel"><div class="section-heading"><div><span class="section-code">TROPHY ROOM</span><h2>Unlocked achievements</h2></div><button class="text-button" data-nav="arcade">All achievements ↗</button></div>${achievementGrid()}</section></div>`;
+}
+
 function renderSettings() {
   viewRoot.innerHTML = `
     <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> SYSTEM PREFERENCES</div><h1>Settings <span>& controls.</span></h1><p class="lead">Tune your practice environment. Your preferences stay on this device.</p></div></section>
@@ -550,7 +948,7 @@ function renderSettings() {
       <label class="preference-row"><span><strong>Canvas background</strong><small>Set the canvas paper color.</small></span><input id="pref-background" type="color" value="${escapeHtml(settings.background)}"></label>
       <label class="preference-row"><span><strong>Brush width</strong><small>Default stroke width.</small></span><input id="pref-brush" type="range" min="1" max="24" value="${settings.brush}"></label>
       <label class="preference-row"><span><strong>Canvas height</strong><small>Default drawing area size.</small></span><input id="pref-canvas-height" type="range" min="160" max="440" step="10" value="${settings.canvasHeight}"></label>
-    </section><aside class="panel side-panel"><div class="section-heading"><div><span class="section-code">DATA / LOCAL ONLY</span><h2>Your vault</h2></div></div><p class="panel-copy">Decks, drawings, and test history are saved in this browser. No sign-up or server is required. Export your decks as CSV for a portable backup.</p><div class="data-actions"><button class="button button-quiet" data-action="export-all">↓ Export all decks</button><button class="button button-outline" data-action="clear-history">Clear test history</button></div><div class="local-status"><span class="live-dot"></span> SAVED ON THIS DEVICE</div></aside></div>`;
+    </section><aside class="panel side-panel"><div class="section-heading"><div><span class="section-code">DATA / LOCAL ONLY</span><h2>Your vault</h2></div></div><p class="panel-copy">Your profile backup includes decks, pairs, history, progression, settings, and test preferences. Account credentials are never included. Keep the downloaded file somewhere safe.</p><div class="data-actions"><button class="button button-quiet" data-action="export-all">↓ Download full backup (.txt)</button><button class="button button-outline" data-action="import-profile">↑ Restore full backup</button><button class="button button-outline" data-action="clear-history">Clear test history</button></div><div class="local-status"><span class="live-dot"></span> SAVED ON THIS DEVICE</div><p class="backup-warning">Restoring replaces this profile's current decks, history, progress, and preferences.</p></aside></div>`;
 }
 
 function renderWeakPairs(limit) {
@@ -570,12 +968,24 @@ function renderWeakPairs(limit) {
 }
 
 function recentRow(record) {
-  return `<div class="recent-row"><span class="recent-glyph">↗</span><span><strong>${escapeHtml(record.deckName)} · ${record.mode === "timed" ? "Timed" : "Self-test"}</strong><small>${formatDate(record.finishedAt)} · ${record.questions.length} questions</small></span><b>${record.score ?? "—"}%</b></div>`;
+  return `<div class="recent-row"><span class="recent-glyph">↗</span><span><strong>${escapeHtml(record.deckName)} · ${modeLabel(record.mode)}</strong><small>${formatDate(record.finishedAt)} · ${record.questions.length} questions</small></span><b>${record.score ?? "—"}%</b></div>`;
 }
 
 function historyRow(record) {
   const result = statsFor([record]);
-  return `<div class="history-row"><div><strong>${escapeHtml(record.deckName)}</strong><small>${formatDate(record.finishedAt)} · ${record.mode === "timed" ? "Timed test" : "Self-test"} · ${record.questions.length} questions</small></div><span class="history-counts"><i>${result.correct} ✓</i><i>${result.incorrect} ×</i><i>${result.skipped} —</i></span><b>${record.score == null ? "—" : `${record.score}%`}</b></div>`;
+  return `<div class="history-row"><div><strong>${escapeHtml(record.deckName)}</strong><small>${formatDate(record.finishedAt)} · ${modeLabel(record.mode)} · ${record.questions.length} questions</small></div><span class="history-counts"><i>${result.correct} ✓</i><i>${result.incorrect} ×</i><i>${result.skipped} —</i></span><b>${record.score == null ? "—" : `${record.score}%`}</b></div>`;
+}
+
+function modeLabel(mode) {
+  return {
+    self: "Self-test",
+    timed: "Timed test",
+    speed: "Speed Run",
+    survival: "Survival",
+    memory: "Memory Rush",
+    perfect: "Perfect Run",
+    boss: "Boss Battle",
+  }[mode] || "Self-test";
 }
 
 function formatDate(timestamp) {
@@ -673,37 +1083,235 @@ function downloadCsv(deck) {
 }
 
 function downloadBackup() {
-  const blob = new Blob([JSON.stringify({ format: "novex-learner-backup", version: 1, exportedAt: new Date().toISOString(), decks: data.decks }, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({
+    format: "novex-learner-profile",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    profile: data.progression.profile,
+    decks: data.decks,
+    history: data.history,
+    progression: data.progression,
+    settings,
+    testOptions,
+  }, null, 2)], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "novex-learner-backup.json";
+  anchor.download = "novex-learner-backup.txt";
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function validateBackup(value) {
+  if (!value || value.format !== "novex-learner-profile" || value.version !== 1) {
+    throw new Error("This is not a supported Novex Learner profile backup.");
+  }
+  const isObject = (item) => item !== null && typeof item === "object" && !Array.isArray(item);
+  if (!Array.isArray(value.decks) || !value.decks.length || !Array.isArray(value.history) ||
+      !isObject(value.progression) || !isObject(value.settings) || !isObject(value.testOptions)) {
+    throw new Error("The backup is missing required profile data.");
+  }
+  const deckIds = new Set();
+  const decks = value.decks.map((deck) => {
+    if (!deck || typeof deck.name !== "string" || !Array.isArray(deck.pairs)) {
+      throw new Error("A deck in this backup has an invalid format.");
+    }
+    let deckId = typeof deck.id === "string" && deck.id ? deck.id : uid();
+    if (deckIds.has(deckId)) deckId = uid();
+    deckIds.add(deckId);
+    const pairIds = new Set();
+    return {
+      id: deckId,
+      name: deck.name.slice(0, 80),
+      pairs: deck.pairs.map((pair) => {
+        if (!pair || typeof pair.left !== "string" || typeof pair.right !== "string") {
+          throw new Error(`A pair in "${deck.name}" is invalid.`);
+        }
+        let pairId = typeof pair.id === "string" && pair.id ? pair.id : uid();
+        if (pairIds.has(pairId)) pairId = uid();
+        pairIds.add(pairId);
+        return {
+          id: pairId,
+          left: pair.left.slice(0, 500),
+          right: pair.right.slice(0, 500),
+          guide: typeof pair.guide === "string" ? pair.guide.slice(0, 5000) : "",
+        };
+      }),
+    };
+  });
+  const history = value.history.map((record) => {
+    if (!record || typeof record.id !== "string" || !Array.isArray(record.questions)) {
+      throw new Error("A test result in this backup is invalid.");
+    }
+    return {
+      id: record.id,
+      deckId: typeof record.deckId === "string" ? record.deckId : "",
+      deckName: typeof record.deckName === "string" ? record.deckName.slice(0, 80) : "Imported deck",
+      mode: ["self", "timed", "speed", "survival", "memory", "perfect", "boss"].includes(record.mode) ? record.mode : "self",
+      startedAt: Number(record.startedAt) || Date.now(),
+      finishedAt: Number(record.finishedAt) || Date.now(),
+      score: record.score == null ? null : Math.min(100, Math.max(0, Number(record.score) || 0)),
+      perfect: Boolean(record.perfect),
+      xpEarned: Number(record.xpEarned) || 0,
+      creditsEarned: Number(record.creditsEarned) || 0,
+      bossVictory: Boolean(record.bossVictory),
+      questions: record.questions.map((question) => {
+        if (!question || typeof question.prompt !== "string" || typeof question.answer !== "string") {
+          throw new Error("A saved answer in this backup is invalid.");
+        }
+        const drawing = typeof question.drawing === "string" ? question.drawing : "";
+        if (drawing && !/^data:image\/png;base64,[\da-z+/]+=*$/i.test(drawing)) {
+          throw new Error("A drawing in this backup has an unsupported format.");
+        }
+        const allowedStatuses = ["correct", "incorrect", "skipped", "pending"];
+        return {
+          pairId: typeof question.pairId === "string" ? question.pairId : "",
+          type: ["leftToRight", "rightToLeft", "write", "draw", "multipleChoice", "recognition"].includes(question.type) ? question.type : "write",
+          direction: typeof question.direction === "string" ? question.direction.slice(0, 50) : "",
+          prompt: question.prompt.slice(0, 500),
+          answer: question.answer.slice(0, 500),
+          left: typeof question.left === "string" ? question.left.slice(0, 500) : question.prompt.slice(0, 500),
+          right: typeof question.right === "string" ? question.right.slice(0, 500) : question.answer.slice(0, 500),
+          guide: typeof question.guide === "string" ? question.guide.slice(0, 5000) : "",
+          response: typeof question.response === "string" ? question.response.slice(0, 500) : "",
+          drawing,
+          background: typeof question.background === "string" && /^#[\da-f]{6}$/i.test(question.background) ? question.background : "#101624",
+          grid: Boolean(question.grid),
+          submitted: Boolean(question.submitted),
+          revealed: Boolean(question.revealed),
+          status: allowedStatuses.includes(question.status) ? question.status : "skipped",
+          rating: question.rating != null && Number.isFinite(Number(question.rating)) ? Math.min(100, Math.max(0, Number(question.rating))) : null,
+          elapsedMs: Math.max(0, Number(question.elapsedMs) || 0),
+        };
+      }),
+    };
+  });
+  const progression = normalizeProgression(value.progression);
+  const validThemes = new Set(["default", ...SHOP_ITEMS.filter((item) => item.type === "theme").map((item) => item.value)]);
+  if (!validThemes.has(progression.equippedTheme) || !progression.owned.includes(`theme-${progression.equippedTheme}`)) progression.equippedTheme = "default";
+  progression.owned = progression.owned.filter((id) =>
+    id === "theme-default" || SHOP_ITEMS.some((item) => item.id === id)
+  );
+  const ownedItems = new Set(progression.owned);
+  if (!ownedItems.has(`theme-${progression.equippedTheme}`)) progression.equippedTheme = "default";
+  if (!ownedItems.has(`frame-${progression.profile.frame}`)) progression.profile.frame = "";
+  const titleItem = SHOP_ITEMS.find((item) => item.type === "title" && item.value === progression.profile.title);
+  if (progression.profile.title && (!titleItem || !ownedItems.has(titleItem.id))) progression.profile.title = "";
+  progression.profile.displayName = typeof progression.profile.displayName === "string" ? progression.profile.displayName.slice(0, 28) : "";
+  progression.profile.title = typeof progression.profile.title === "string" ? progression.profile.title.slice(0, 40) : "";
+  progression.profile.avatar = ["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍"].includes(progression.profile.avatar) ? progression.profile.avatar : "⌬";
+  progression.profile.frame = ["", "orbit", "glitch"].includes(progression.profile.frame) ? progression.profile.frame : "";
+  return {
+    decks,
+    history,
+    progression,
+    settings: normalizeSettings(value.settings),
+    testOptions: normalizeTestOptions(value.testOptions),
+  };
+}
+
+async function restoreBackup(file) {
+  if (!file) return;
+  if (file.size > 50 * 1024 * 1024) throw new Error("Backup files must be smaller than 50 MB.");
+  const parsed = JSON.parse(await file.text());
+  const restored = validateBackup(parsed);
+  const deckCount = restored.decks.length;
+  const pairCount = restored.decks.reduce((sum, deck) => sum + deck.pairs.length, 0);
+  if (!window.confirm(`Restore ${deckCount} deck${deckCount === 1 ? "" : "s"} and ${pairCount} pair${pairCount === 1 ? "" : "s"}? This replaces the current profile's decks, history, progression, settings, and test preferences.`)) return;
+  const previous = { data, settings, testOptions };
+  data = { decks: restored.decks, history: restored.history, progression: restored.progression };
+  settings = restored.settings;
+  testOptions = restored.testOptions;
+  activeDeckId = data.decks[0].id;
+  if (!persist()) {
+    data = previous.data;
+    settings = previous.settings;
+    testOptions = previous.testOptions;
+    activeDeckId = data.decks[0]?.id || "";
+    updateHeader();
+    return;
+  }
+  updateHeader();
+  setView("dashboard");
+  showToast("PROFILE RESTORED · your vault and progress are back");
 }
 
 function startTest() {
   const deck = activeDeck();
   if (!deck) return showToast("Create a deck before starting a test.", true);
-  const candidates = buildQuestionSet(deck, testOptions.types, Number(testOptions.count) || 1);
+  const mode = testOptions.mode;
+  const types = mode === "boss"
+    ? { leftToRight: true, rightToLeft: true, write: true, draw: false, multipleChoice: false, recognition: false }
+    : testOptions.types;
+  const pool = allQuestions(deck, types);
+  const requested = mode === "speed" || mode === "survival"
+    ? 1000
+    : mode === "perfect"
+      ? pool.length
+    : mode === "boss" ? Math.min(5, pool.length) : Number(testOptions.count) || 1;
+  const candidates = buildQuestionSet(deck, types, requested, ["speed", "survival"].includes(mode));
   if (!candidates.length) return showToast("Enable at least one question type.", true);
   session = {
-    id: uid(), deckId: deck.id, deckName: deck.name, mode: testOptions.mode,
+    id: uid(), deckId: deck.id, deckName: deck.name, mode,
     questions: candidates, index: 0, finished: false, startedAt: Date.now(),
-    durationMs: Math.max(1, Number(testOptions.minutes) || 1) * 60_000,
-    secondsRemaining: Math.max(1, Number(testOptions.minutes) || 1) * 60,
+    durationMs: mode === "speed"
+      ? (60 + data.progression.skills.speed * 5) * 1000
+      : Math.min(180, Math.max(1, Number(testOptions.minutes) || 1) + data.progression.skills.focus) * 60_000,
+    secondsRemaining: mode === "speed"
+      ? 60 + data.progression.skills.speed * 5
+      : Math.min(180, Math.max(1, Number(testOptions.minutes) || 1) + data.progression.skills.focus) * 60,
     currentShownAt: Date.now(), historySaved: false,
+    phase: mode === "memory" ? "memorize" : "recall",
+    bossNumber: mode === "boss" ? bossNumber() : null,
+    bossHealth: candidates.length,
+    playerHealth: 3,
   };
   document.querySelector(".app-shell").hidden = true;
   testScreen.hidden = false;
-  if (session.mode === "timed") {
+  if (session.mode === "speed" || session.mode === "timed") {
+    sessionTimerEndsAt = session.startedAt + session.durationMs;
     timerId = window.setInterval(() => {
       if (!session || session.finished) return;
-      session.secondsRemaining = Math.max(0, Math.ceil((session.startedAt + session.durationMs - Date.now()) / 1000));
+      session.secondsRemaining = Math.max(0, Math.ceil((sessionTimerEndsAt - Date.now()) / 1000));
       if (session.secondsRemaining <= 0) finishTest(true);
       else updateTimer();
     }, 250);
+  } else if (session.mode === "memory") {
+    session.secondsRemaining = 10 + data.progression.skills.memory * 2;
+    sessionTimerEndsAt = Date.now() + session.secondsRemaining * 1000;
+    renderMemoryPreview();
+    timerId = window.setInterval(() => {
+      if (!session || session.finished || session.phase !== "memorize") return;
+      session.secondsRemaining = Math.max(0, Math.ceil((sessionTimerEndsAt - Date.now()) / 1000));
+      if (session.secondsRemaining <= 0) beginMemoryRecall();
+      else renderMemoryTimer();
+    }, 250);
+    return;
   }
+  renderQuestion();
+}
+
+function renderMemoryPreview() {
+  testScreen.innerHTML = `<div class="test-shell memory-shell"><header class="test-top"><button class="back-link" data-action="exit-test">← Exit session</button><span class="test-brand">MEMORY <b>RUSH</b></span><span class="timer-pill" id="memory-timer">00:10</span></header><section class="memory-intro"><span class="section-code">MEMORIZE THE PAIRS</span><h1>Lock it <span>in.</span></h1><p>Study these pairs. They disappear when the countdown ends.</p></section><div class="memory-grid">${session.questions.map((question) => `<article class="memory-pair"><small>PAIR ${String(session.questions.indexOf(question) + 1).padStart(2, "0")}</small><strong>${escapeHtml(question.left)}</strong><i>↔</i><strong>${escapeHtml(question.right)}</strong></article>`).join("")}</div><button class="button button-primary memory-ready" data-action="memory-ready">I'M READY · START RECALL →</button></div>`;
+  testScreen.querySelector('[data-action="exit-test"]').addEventListener("click", handleTestAction);
+  testScreen.querySelector('[data-action="memory-ready"]').addEventListener("click", beginMemoryRecall);
+  renderMemoryTimer();
+}
+
+function renderMemoryTimer() {
+  const timer = testScreen.querySelector("#memory-timer");
+  if (timer) timer.textContent = `${String(Math.floor(session.secondsRemaining / 60)).padStart(2, "0")}:${String(session.secondsRemaining % 60).padStart(2, "0")}`;
+}
+
+function beginMemoryRecall() {
+  if (!session || session.phase !== "memorize") return;
+  if (timerId !== null) {
+    clearInterval(timerId);
+    timerId = null;
+  }
+  session.phase = "recall";
+  session.index = 0;
+  session.currentShownAt = Date.now();
   renderQuestion();
 }
 
@@ -743,21 +1351,37 @@ function updateTimer() {
 function renderQuestion() {
   if (!session || session.finished) return;
   const question = questionNow();
-  const self = session.mode === "self";
+  question.presented = true;
+  const self = !["timed", "speed"].includes(session.mode);
   const revealed = self && question.revealed;
   const submitted = question.submitted;
   const drawMode = question.type === "draw";
   const score = getSessionScore();
+  const bossStatus = session.mode === "boss" ? `<div class="boss-health"><span>OPERATOR <b>${"♥".repeat(session.playerHealth)}${"♡".repeat(Math.max(0, 3 - session.playerHealth))}</b></span><span>CORE <b>${"◆".repeat(session.bossHealth)}${"◇".repeat(Math.max(0, session.bossMaxHealth - session.bossHealth))}</b></span></div>` : "";
+  const openEndedMode = ["speed", "survival"].includes(session.mode);
+  const progressPercent = openEndedMode ? ((session.index % 10) + 1) * 10 : ((session.index + (revealed ? 1 : 0)) / session.questions.length) * 100;
+  const progressLabel = openEndedMode ? `QUESTION ${session.index + 1}` : `QUESTION <b>${session.index + 1}</b> / ${session.questions.length}`;
+  const statusLabel = session.mode === "speed"
+    ? `${session.questions.filter((item) => item.submitted).length} ANSWERED · 60-SECOND RUN`
+    : session.mode === "survival"
+      ? `${session.questions.filter((item) => item.status === "correct").length} SURVIVED`
+      : self ? "SELF-GRADED" : `${session.questions.filter((item) => item.submitted).length} SUBMITTED`;
+  const answerInput = question.type === "draw"
+    ? renderDrawingArea(question, revealed)
+    : question.type === "multipleChoice"
+      ? `<div class="answer-area"><div class="field-label">SELECT THE MATCHING SIDE</div><div class="choice-grid">${question.choices.map((choice, index) => `<button type="button" class="choice-option ${question.response === choice ? "selected" : ""}" data-choice="${escapeHtml(choice)}" ${revealed || submitted ? "disabled" : ""}><small>${index + 1}</small>${escapeHtml(choice)}</button>`).join("")}</div></div>`
+      : `<div class="answer-area"><label class="field-label" for="answer-text">YOUR ANSWER</label><textarea id="answer-text" class="answer-text" rows="3" ${revealed || submitted ? "disabled" : ""} placeholder="Type your answer…">${escapeHtml(question.response)}</textarea></div>`;
   testScreen.innerHTML = `
     <div class="test-shell">
-      <header class="test-top"><button class="back-link" data-action="exit-test">← Exit session</button><span class="test-brand">NOVEX <b>LEARNER</b></span>${self ? `<span class="live-score"><small>LIVE SCORE</small><strong>${score.percent}%</strong></span>` : '<span id="timer" class="timer-pill"></span>'}</header>
-      <div class="test-progress-row"><span>QUESTION <b>${session.index + 1}</b> / ${session.questions.length}</span><span>${self ? "SELF-GRADED" : `${session.questions.filter((item) => item.submitted).length} SUBMITTED`}</span></div>
-      <div class="progress-track"><div class="progress-fill" style="width:${((session.index + (revealed ? 1 : 0)) / session.questions.length) * 100}%"></div></div>
+      <header class="test-top"><button class="back-link" data-action="exit-test">← Exit session</button><span class="test-brand">${session.mode === "speed" ? "SPEED " : session.mode === "survival" ? "SURVIVAL " : session.mode === "perfect" ? "PERFECT " : session.mode === "boss" ? "BOSS " : session.mode === "memory" ? "MEMORY " : "NOVEX "}<b>${session.mode === "boss" ? "BATTLE" : "LEARNER"}</b></span>${["timed", "speed"].includes(session.mode) ? '<span id="timer" class="timer-pill"></span>' : `<span class="live-score"><small>${session.mode === "boss" ? "BOSS CORE" : "LIVE SCORE"}</small><strong>${session.mode === "boss" ? `${session.bossHealth}/${session.questions.length}` : `${score.percent}%`}</strong></span>`}</header>
+      ${bossStatus}
+      <div class="test-progress-row"><span>${progressLabel}</span><span>${statusLabel}</span></div>
+      <div class="progress-track"><div class="progress-fill" style="width:${progressPercent}%"></div></div>
       <article class="question-card">
         <div class="question-kicker">${escapeHtml(question.direction)}</div>
         <h1>${escapeHtml(question.prompt)}</h1>
         <p class="question-hint">${question.type === "recognition" ? "Recall the matching side of this pair." : drawMode ? "Write the answer by hand. Multiple characters are welcome." : "Take a moment. What belongs on the other side?"}</p>
-        ${drawMode ? renderDrawingArea(question, revealed) : `<div class="answer-area"><label class="field-label" for="answer-text">YOUR ANSWER</label><textarea id="answer-text" class="answer-text" rows="3" ${revealed || submitted ? "disabled" : ""} placeholder="Type your answer…">${escapeHtml(question.response)}</textarea></div>`}
+        ${answerInput}
         ${revealed ? `<div class="answer-reveal"><div class="section-code">REFERENCE PAIR</div><div class="reveal-values"><strong>${escapeHtml(question.left)}</strong><span>↔</span><strong>${escapeHtml(question.right)}</strong></div>${drawMode && question.guide ? `<div class="stroke-guide"><small>MANUAL STROKE GUIDE</small><p>${escapeHtml(question.guide).replace(/\n/g, "<br>")}</p></div>` : ""}        ${drawMode
           ? `<div class="character-rating"><label for="character-rating">SELF-GRADE YOUR HANDWRITING</label><div><input id="character-rating" data-rating type="range" min="0" max="100" step="1" value="${question.rating ?? 50}" aria-label="Character score from zero to one hundred"><output id="rating-output">${question.rating ?? 50}%</output></div><small>100 = nailed it · 0 = needs more practice</small></div>`
           : `<div class="grade-controls"><span>How did you do?</span><button class="grade-button correct ${question.status === "correct" ? "chosen" : ""}" data-grade="correct">✓ Correct</button><button class="grade-button incorrect ${question.status === "incorrect" ? "chosen" : ""}" data-grade="incorrect">× Incorrect</button></div>`}
@@ -775,10 +1399,14 @@ function renderQuestion() {
         </div>
       </article>
     </div>`;
-  if (session.mode === "timed") updateTimer();
+  if (["timed", "speed"].includes(session.mode)) updateTimer();
   if (drawMode) setupDrawingCanvas(question, revealed);
   testScreen.querySelector("#answer-text")?.addEventListener("input", () => { question.response = testScreen.querySelector("#answer-text").value; });
   testScreen.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", handleTestAction));
+  testScreen.querySelectorAll("[data-choice]").forEach((button) => button.addEventListener("click", () => {
+    question.response = button.dataset.choice;
+    testScreen.querySelectorAll("[data-choice]").forEach((option) => option.classList.toggle("selected", option === button));
+  }));
   testScreen.querySelectorAll("[data-grade]").forEach((button) => button.addEventListener("click", () => gradeCurrent(button.dataset.grade)));
   testScreen.querySelector("[data-rating]")?.addEventListener("input", (event) => {
     question.rating = Number(event.target.value);
@@ -940,6 +1568,10 @@ function handleTestAction(event) {
     questionNow().submitted = true;
     renderQuestion();
   } else if (action === "skip-question") {
+    if (["survival", "perfect", "boss"].includes(session.mode)) {
+      saveQuestionResponse();
+      return gradeCurrent("incorrect");
+    }
     saveQuestionResponse();
     addQuestionTime();
     const question = questionNow();
@@ -953,13 +1585,220 @@ function handleTestAction(event) {
 
 function gradeCurrent(status) {
   const question = questionNow();
+  addQuestionTime();
   question.status = status;
+  question.revealed = true;
   if (question.type === "draw") question.rating = status === "correct" ? 100 : status === "incorrect" ? 0 : null;
+  if (session.mode === "boss") {
+    if (status === "correct") session.bossHealth = Math.max(0, session.bossHealth - 1);
+    else session.playerHealth = Math.max(0, session.playerHealth - 1);
+    if (session.bossHealth === 0) {
+      session.bossVictory = true;
+      return finishTest(false);
+    }
+    if (session.playerHealth === 0) {
+      session.bossVictory = false;
+      return finishTest(false);
+    }
+    return nextOrFinish();
+  }
+  if (session.mode === "survival" && status !== "correct") {
+    session.failedRun = true;
+    return finishTest(false);
+  }
+  if (session.mode === "perfect" && status !== "correct") {
+    session.failedRun = true;
+    return finishTest(false);
+  }
+  if (session.mode === "survival" && session.index === session.questions.length - 1) return finishTest(false);
   renderQuestion();
+}
+
+function addExperience(amount) {
+  if (session) session.xpEarned = (session.xpEarned || 0) + amount;
+  const before = currentLevel();
+  data.progression.xp = Math.max(0, data.progression.xp + amount);
+  const gainedLevels = currentLevel() - before;
+  if (gainedLevels > 0) {
+    data.progression.skillPoints += gainedLevels;
+    showToast(`LEVEL UP · LEVEL ${currentLevel()} · +${gainedLevels} SKILL POINT${gainedLevels > 1 ? "S" : ""}`);
+  }
+}
+
+function addCredits(amount) {
+  data.progression.credits += amount;
+  if (session) session.creditsEarned = (session.creditsEarned || 0) + amount;
+}
+
+function updateStreak() {
+  const progression = data.progression;
+  const today = todayKey();
+  if (progression.lastStudyDate === today) return;
+  const gap = progression.lastStudyDate ? dayDifference(progression.lastStudyDate, today) : 0;
+  if (!progression.lastStudyDate) progression.streak = 1;
+  else if (gap === 1) progression.streak += 1;
+  else if (gap === 2 && progression.freezeCount > 0) {
+    progression.freezeCount -= 1;
+    progression.streak += 1;
+    showToast("STREAK SHIELD ACTIVATED · your streak is safe");
+  } else if (gap >= 7) {
+    session.comeback = true;
+    progression.streak = 1;
+  } else if (gap > 1) progression.streak = 1;
+  progression.lastStudyDate = today;
+  progression.lastActiveDate = today;
+  progression.bestStreak = Math.max(progression.bestStreak, progression.streak);
+}
+
+function dayDifference(from, to) {
+  const start = new Date(`${from}T00:00:00Z`);
+  const end = new Date(`${to}T00:00:00Z`);
+  return Math.round((end - start) / 86_400_000);
+}
+
+function awardQuestionReward(question) {
+  if (question.rewarded || !["correct", "incorrect"].includes(question.status)) return;
+  question.rewarded = true;
+  if (question.status === "correct") {
+    addExperience(12 + data.progression.skills.intelligence * 2);
+    addCredits(4);
+    data.progression.correctTotal += 1;
+    data.progression.daily.correct += 1;
+  } else if (question.status === "incorrect") {
+    addExperience(2);
+  }
+}
+
+function refreshDailyChallenges() {
+  const daily = data.progression.daily;
+  for (const challenge of DAILY_CHALLENGES) {
+    if (!daily.completed.includes(challenge.id) && challengeProgress(challenge) >= challenge.target) {
+      daily.completed.push(challenge.id);
+      addCredits(challenge.reward);
+      showToast(`DAILY MISSION COMPLETE · +${challenge.reward} CREDITS`);
+    }
+  }
+  if (daily.completed.length === DAILY_CHALLENGES.length && !daily.bonusClaimed) {
+    daily.bonusClaimed = true;
+    addCredits(50);
+    showToast("ALL MISSIONS COMPLETE · +50 BONUS CREDITS");
+  }
+}
+
+function applySessionRewards() {
+  if (session.rewardsApplied) return;
+  resetDailyIfNeeded();
+  const progression = data.progression;
+  const submitted = session.questions.filter((question) => question.submitted).length;
+  const score = getSessionScore();
+  session.perfect = session.questions.length > 0 &&
+    session.questions.every((question) => question.status === "correct") &&
+    score.percent === 100;
+  session.engaged = submitted > 0 || score.graded > 0;
+  session.xpEarned = 0;
+  session.creditsEarned = 0;
+  if (session.engaged) {
+    addExperience(submitted * 3 + 10);
+    addCredits(10);
+    progression.answeredTotal += submitted;
+    progression.daily.answered += submitted;
+    progression.daily.sessions += 1;
+    progression.daily.modes = [...new Set([...(progression.daily.modes || []), session.mode])];
+    if (session.mode === "speed") {
+      const speedBonus = 15 + progression.skills.speed * 3;
+      addExperience(speedBonus);
+      addCredits(10);
+    }
+    if (session.perfect) {
+      addExperience(25);
+      addCredits(20);
+      progression.perfectSessions += 1;
+      session.perfectBonusApplied = true;
+    }
+    if (session.mode === "boss" && session.bossVictory) {
+      progression.defeatedBosses = [...new Set([...progression.defeatedBosses, session.bossNumber])];
+      addCredits(100);
+      addExperience(80);
+    }
+    if (session.mode === "survival" && session.questions.filter((question) => question.status === "correct").length >= 10) {
+      addCredits(30);
+    }
+    updateStreak();
+    for (const question of session.questions) awardQuestionReward(question);
+    refreshDailyChallenges();
+    progression.lastActiveDate = todayKey();
+  }
+  session.rewardsApplied = true;
+  checkAchievements();
+  persist();
+}
+
+function checkAchievements() {
+  const progression = data.progression;
+  const records = data.history;
+  const current = session;
+  const activeRecords = records.filter((record) => (record.questions || []).some((question) =>
+    question.submitted || ["correct", "incorrect"].includes(question.status)
+  ));
+  const perfectCount = activeRecords.filter((record) => record.perfect).length + (current?.perfect && !activeRecords.some((record) => record.id === current.id) ? 1 : 0);
+  const modes = new Set(activeRecords.map((record) => record.mode));
+  if (current?.engaged) modes.add(current.mode);
+  const currentDay = todayKey();
+  const studiedTerms = [
+    ...activeRecords.filter((record) => todayKey(record.finishedAt) === currentDay).flatMap((record) => (record.questions || [])
+      .filter((question) => question.submitted)
+      .flatMap((question) => [question.left || "", question.right || ""])),
+    ...(current?.questions || []).filter((question) => question.submitted).flatMap((question) => [question.left || "", question.right || ""]),
+  ];
+  const secretPairSeen = ["你好", "再见"].every((term) => studiedTerms.some((side) => side.includes(term)));
+  const unlocked = new Set(progression.achievements);
+  const qualifies = {
+    "first-session": activeRecords.length > 0 || Boolean(current?.engaged),
+    "night-owl": Boolean(current?.engaged && new Date(current.startedAt).getHours() < 5),
+    unstoppable: progression.streak >= 30,
+    "brain-machine": progression.correctTotal >= 100,
+    comeback: Boolean(current?.comeback),
+    perfectionist: progression.perfectSessions >= 10 || perfectCount >= 10,
+    "speed-demon": activeRecords.some((record) => record.mode === "speed") || Boolean(current?.engaged && current.mode === "speed"),
+    survivor: activeRecords.some((record) => record.mode === "survival" && (record.questions || []).filter((question) => question.status === "correct").length >= 10) ||
+      Boolean(current?.engaged && current.mode === "survival" && current.questions.filter((question) => question.status === "correct").length >= 10),
+    collector: progression.owned.filter((item) => item !== "theme-default").length >= 3,
+    variety: modes.size >= 3,
+    "secret-code": secretPairSeen,
+  };
+  for (const achievement of ACHIEVEMENTS) {
+    if (!unlocked.has(achievement.id) && qualifies[achievement.id]) {
+      progression.achievements.push(achievement.id);
+      addCredits(25);
+      addExperience(15);
+      showToast(`ACHIEVEMENT UNLOCKED · ${achievement.name} · +25 CREDITS`);
+    }
+  }
+}
+
+function awardLateGrading(question) {
+  if (question.rewarded) return;
+  awardQuestionReward(question);
+  if (question.status === "correct") refreshDailyChallenges();
+  if (session && !session.perfectBonusApplied && session.questions.length > 0 &&
+      session.questions.every((item) => item.status === "correct")) {
+    session.perfect = true;
+    session.perfectBonusApplied = true;
+    data.progression.perfectSessions += 1;
+    addCredits(20);
+    addExperience(25);
+    showToast("PERFECT RUN · +25 XP · +20 CREDITS");
+  }
+  checkAchievements();
+  persist();
 }
 
 function nextOrFinish() {
   addQuestionTime();
+  if (session.mode === "boss" && session.index === session.questions.length - 1) {
+    session.bossVictory = session.bossHealth === 0;
+    return finishTest(false);
+  }
   if (session.index >= session.questions.length - 1) finishTest(false);
   else {
     session.index += 1;
@@ -970,9 +1809,9 @@ function nextOrFinish() {
 
 function finishTest(timedOut) {
   if (!session || session.finished) return;
-  if (session.mode === "timed") {
+  if (["timed", "speed"].includes(session.mode)) {
     const question = questionNow();
-    if (!question.submitted && (testScreen.querySelector("#answer-text") || testScreen.querySelector("#answer-canvas"))) {
+    if (!question.submitted) {
       saveQuestionResponse();
       if (question.response.trim() || question.drawing) question.submitted = true;
     }
@@ -980,6 +1819,7 @@ function finishTest(timedOut) {
     saveQuestionResponse();
   }
   addQuestionTime();
+  session.questions = session.questions.filter((question) => question.presented);
   session.finished = true;
   session.timedOut = timedOut;
   if (timerId !== null) {
@@ -989,7 +1829,10 @@ function finishTest(timedOut) {
   session.questions.forEach((question) => {
     if (!question.status) question.status = "skipped";
   });
+  applySessionRewards();
   saveHistory();
+  checkAchievements();
+  persist();
   renderResults();
 }
 
@@ -1004,6 +1847,10 @@ function saveHistory() {
       startedAt: session.startedAt,
       finishedAt: Date.now(),
       score: score.graded ? score.percent : null,
+      perfect: session.perfect,
+      xpEarned: session.xpEarned || 0,
+      creditsEarned: session.creditsEarned || 0,
+      bossVictory: session.bossVictory || false,
       questions: session.questions.map((question) => ({ ...question })),
     });
     session.historySaved = true;
@@ -1012,6 +1859,10 @@ function saveHistory() {
     if (record) {
       record.questions = session.questions.map((question) => ({ ...question }));
       record.score = score.graded ? score.percent : null;
+      record.perfect = session.perfect;
+      record.xpEarned = session.xpEarned || 0;
+      record.creditsEarned = session.creditsEarned || 0;
+      record.bossVictory = session.bossVictory || false;
     }
   }
   persist();
@@ -1021,8 +1872,8 @@ function renderResults() {
   const score = getSessionScore();
   const skipped = session.questions.filter((question) => question.status === "skipped").length;
   testScreen.innerHTML = `
-    <div class="test-shell results-shell"><header class="test-top"><button class="back-link" data-action="back-home">← Return to vault</button><span class="test-brand">NOVEX <b>LEARNER</b></span><span class="test-mode-label">${session.mode === "timed" ? "TIMED REVIEW" : "SESSION RESULTS"}</span></header>
-    <section class="result-hero"><div class="eyebrow"><span class="pulse"></span>${session.timedOut ? "TIME LIMIT REACHED" : "SESSION COMPLETE"}</div><h1>${session.mode === "timed" ? "Review your answers." : "Good work showing up."}</h1><p>${escapeHtml(session.deckName)} · ${session.questions.length} questions · ${formatDuration(Date.now() - session.startedAt)}</p><div class="result-score"><strong id="result-percent">${score.graded ? score.percent : "—"}</strong><span>%</span></div><div class="result-summary"><span><b id="result-correct">${score.correct}</b> correct</span><span><b id="result-incorrect">${score.incorrect}</b> incorrect</span><span><b>${skipped}</b> skipped</span><span><b>${score.graded}</b> graded</span></div></section>
+    <div class="test-shell results-shell"><header class="test-top"><button class="back-link" data-action="back-home">← Return to vault</button><span class="test-brand">NOVEX <b>LEARNER</b></span><span class="test-mode-label">${session.mode === "timed" || session.mode === "speed" ? "TIMED REVIEW" : "SESSION RESULTS"}</span></header>
+    <section class="result-hero"><div class="eyebrow"><span class="pulse"></span>${session.bossVictory ? "BOSS DEFEATED · +100 CREDITS" : session.bossVictory === false && session.mode === "boss" ? "OPERATOR WITHDREW · REGROUP AND RETRY" : session.timedOut ? "TIME LIMIT REACHED" : session.failedRun ? "RUN ENDED · RESET AND REBUILD" : "SESSION COMPLETE"}</div><h1>${session.mode === "speed" ? "Clock's out." : session.mode === "survival" ? "Survival report." : session.mode === "memory" ? "Memory deployed." : session.mode === "boss" ? (session.bossVictory ? "Core destabilized." : "The boss held the line.") : session.mode === "timed" ? "Review your answers." : session.perfect ? "Flawless execution." : "Good work showing up."}</h1><p>${escapeHtml(session.deckName)} · ${session.questions.length} questions · ${formatDuration(Date.now() - session.startedAt)}</p><div class="result-score"><strong id="result-percent">${score.graded ? score.percent : "—"}</strong><span>%</span></div><div class="result-summary"><span><b id="result-correct">${score.correct}</b> correct</span><span><b id="result-incorrect">${score.incorrect}</b> incorrect</span><span><b>${skipped}</b> skipped</span><span><b>${score.graded}</b> graded</span></div><div class="reward-toast">+${session.xpEarned || 0} XP &nbsp;·&nbsp; +${session.creditsEarned || 0} CREDITS${session.perfect ? " &nbsp;·&nbsp; PERFECT RUN" : ""}</div></section>
     <div class="result-toolbar"><div><span class="section-code">ANSWER REVIEW</span><h2>Manual grading</h2></div><span class="result-instruction">Correct + incorrect answers count toward your percentage. Skips do not.</span></div>
     <div class="result-list">${session.questions.map((question, index) => renderResultQuestion(question, index)).join("")}</div>
     <div class="results-actions"><button class="button button-quiet" data-action="back-home">← Back to dashboard</button><button class="button button-primary" data-action="restart-test">Start another session →</button></div></div>`;
@@ -1030,6 +1881,7 @@ function renderResults() {
     const question = session.questions[Number(button.dataset.index)];
     question.status = button.dataset.gradeResult;
     if (question.type === "draw") question.rating = question.status === "correct" ? 100 : question.status === "incorrect" ? 0 : null;
+    awardLateGrading(question);
     saveHistory();
     renderResults();
   }));
@@ -1038,18 +1890,29 @@ function renderResults() {
     question.rating = Number(input.value);
     question.status = question.rating === 100 ? "correct" : "incorrect";
     input.nextElementSibling.textContent = `${question.rating}%`;
-    saveHistory();
     updateResultsScore();
     const card = input.closest(".result-card");
     card.querySelector(".result-status").textContent = question.status.toUpperCase();
     card.querySelector(".result-status").className = `result-status status-${question.status}`;
     card.querySelector(".result-grade-actions > span").textContent = question.status === "correct" ? "Marked correct" : "Marked incorrect";
   }));
+  testScreen.querySelectorAll("[data-result-rating]").forEach((input) => input.addEventListener("change", () => {
+    const question = session.questions[Number(input.dataset.index)];
+    awardLateGrading(question);
+    saveHistory();
+    renderResults();
+  }));
   testScreen.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => {
     if (button.dataset.action === "back-home") exitTest();
     if (button.dataset.action === "restart-test") {
+      const previousMode = session.mode;
+      const deckId = session.deckId;
       testScreen.hidden = true;
       session = null;
+      if (previousMode === "boss") {
+        activeDeckId = deckId;
+        return startBossFight();
+      }
       startTest();
     }
   }));
@@ -1087,11 +1950,12 @@ function exitTest() {
 
 function showToast(message, error = false) {
   document.querySelector(".toast")?.remove();
+  if (toastTimer) clearTimeout(toastTimer);
   const toast = document.createElement("div");
-  toast.className = `toast ${error ? "toast-error" : ""}`;
-  toast.textContent = message;
+  toast.className = `toast terminal-toast ${error ? "toast-error" : ""}`;
+  toast.innerHTML = `<span class="toast-glyph">${error ? "!" : "⌁"}</span><span>${escapeHtml(message)}</span>`;
   document.body.append(toast);
-  window.setTimeout(() => toast.remove(), 3500);
+  toastTimer = window.setTimeout(() => toast.remove(), 4400);
 }
 
 viewRoot.addEventListener("click", (event) => {
@@ -1105,9 +1969,23 @@ viewRoot.addEventListener("click", (event) => {
     return renderDeck();
   }
   const button = event.target.closest("[data-action]");
+  const startMode = event.target.closest("[data-start-mode]");
+  if (startMode) {
+    testOptions.mode = startMode.dataset.startMode;
+    const deck = activeDeck();
+    testOptions.count = Math.max(1, allQuestions(deck).length);
+    persist();
+    setView("dashboard");
+    return startTest();
+  }
+  const shopButton = event.target.closest("[data-shop-item]");
+  if (shopButton) return handleShopPurchase(shopButton.dataset.shopItem);
+  const skillButton = event.target.closest("[data-skill]");
+  if (skillButton) return investSkill(skillButton.dataset.skill);
   if (!button) return;
   const { action, id } = button.dataset;
   if (action === "new-deck") openCreateDeck();
+  else if (action === "boss-fight") startBossFight();
   else if (action === "start-test") {
     updateTestOptionsFromUI();
     startTest();
@@ -1168,6 +2046,8 @@ viewRoot.addEventListener("click", (event) => {
     }
   } else if (action === "export-all") {
     downloadBackup();
+  } else if (action === "import-profile") {
+    backupInput.click();
   }
 });
 
@@ -1253,6 +2133,21 @@ document.addEventListener("submit", (event) => {
     persist();
     closeModal();
     setView("deck");
+  } else if (event.target.id === "profile-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    data.progression.profile.displayName = String(form.get("displayName") || "").trim().slice(0, 28);
+    data.progression.profile.avatar = String(form.get("avatar") || "⌬");
+    const title = String(form.get("title") || "");
+    const allowedTitles = SHOP_ITEMS.filter((item) => item.type === "title" && data.progression.owned.includes(item.id)).map((item) => item.value);
+    data.progression.profile.title = allowedTitles.includes(title) ? title : "";
+    const frame = String(form.get("frame") || "");
+    const allowedFrames = SHOP_ITEMS.filter((item) => item.type === "frame" && data.progression.owned.includes(item.id)).map((item) => item.value);
+    data.progression.profile.frame = allowedFrames.includes(frame) ? frame : "";
+    persist();
+    updateHeader();
+    renderProfile();
+    showToast("OPERATOR PROFILE UPDATED");
   }
 });
 
@@ -1278,6 +2173,19 @@ csvInput.addEventListener("change", async () => {
     showToast(error.message || "CSV import failed.", true);
   } finally {
     csvInput.value = "";
+  }
+});
+
+backupInput.addEventListener("change", async () => {
+  const file = backupInput.files?.[0];
+  if (!file) return;
+  try {
+    await restoreBackup(file);
+  } catch (error) {
+    console.error("Profile restore failed.", error);
+    showToast(error.message || "Could not restore this profile backup.", true);
+  } finally {
+    backupInput.value = "";
   }
 });
 
