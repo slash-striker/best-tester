@@ -5,10 +5,30 @@ create table if not exists public.gofish_rooms (
   status text not null default 'lobby' check (status in ('lobby', 'playing', 'finished')),
   current_turn uuid references auth.users(id) on delete set null,
   deck_count integer not null default 0 check (deck_count between 0 and 52),
+  turn_timer_seconds integer not null default 0,
+  turn_deadline_at timestamptz,
   last_action text not null default 'Room created. Invite a friend to join.',
   winner_id uuid references auth.users(id) on delete set null,
+  end_reason text,
   created_at timestamptz not null default now()
 );
+
+alter table public.gofish_rooms add column if not exists turn_timer_seconds integer not null default 0;
+alter table public.gofish_rooms add column if not exists turn_deadline_at timestamptz;
+alter table public.gofish_rooms add column if not exists end_reason text;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.gofish_rooms'::regclass and conname = 'gofish_rooms_timer_seconds_check') then
+    alter table public.gofish_rooms
+      add constraint gofish_rooms_timer_seconds_check check (turn_timer_seconds in (0, 30, 60, 90));
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'public.gofish_rooms'::regclass and conname = 'gofish_rooms_end_reason_check') then
+    alter table public.gofish_rooms
+      add constraint gofish_rooms_end_reason_check check (end_reason is null or end_reason in ('completed', 'host_ended', 'abandoned'));
+  end if;
+end;
+$$;
 
 create table if not exists public.gofish_players (
   room_id uuid not null references public.gofish_rooms(id) on delete cascade,
@@ -74,7 +94,7 @@ create policy "Players can read only their own hand"
   using (user_id = auth.uid() and public.is_gofish_member(room_id));
 
 revoke all on public.gofish_rooms, public.gofish_players, public.gofish_hands, public.gofish_decks from public, anon, authenticated;
-grant select (id, code, host_id, status, current_turn, deck_count, last_action, winner_id, created_at)
+grant select (id, code, host_id, status, current_turn, deck_count, turn_timer_seconds, turn_deadline_at, last_action, winner_id, end_reason, created_at)
   on public.gofish_rooms to authenticated;
 grant select (room_id, user_id, display_name, seat, books, left_at, joined_at)
   on public.gofish_players to authenticated;
@@ -213,6 +233,35 @@ begin
 end;
 $$;
 
+create or replace function public.set_gofish_timer(p_room_id uuid, p_seconds integer)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+declare
+  target public.gofish_rooms%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to change the turn timer.';
+  end if;
+  if p_seconds not in (0, 30, 60, 90) then
+    raise exception 'Choose no timer, 30, 60, or 90 seconds.';
+  end if;
+  select * into target from public.gofish_rooms where id = p_room_id for update;
+  if not found or target.host_id <> auth.uid() then
+    raise exception 'Only the room host can change the turn timer.';
+  end if;
+  if target.status <> 'lobby' then
+    raise exception 'The turn timer can only be changed before the game starts.';
+  end if;
+  update public.gofish_rooms
+  set turn_timer_seconds = p_seconds,
+      turn_deadline_at = null
+  where id = p_room_id;
+end;
+$$;
+
 create or replace function public.start_gofish_room(p_room_id uuid)
 returns void
 language plpgsql
@@ -284,6 +333,8 @@ begin
   set status = 'playing',
       current_turn = host_id,
       deck_count = jsonb_array_length(deck),
+      turn_deadline_at = case when turn_timer_seconds = 0 then null else now() + make_interval(secs => turn_timer_seconds) end,
+      end_reason = null,
       last_action = 'Cards dealt. Ask a friend for a rank in your hand.'
   where id = p_room_id;
 end;
@@ -404,12 +455,18 @@ begin
     where room_id = p_room_id and left_at is null
     order by books desc, seat
     limit 1;
-    update public.gofish_rooms set status = 'finished', winner_id = next_user, current_turn = null where id = p_room_id;
+    update public.gofish_rooms
+    set status = 'finished', winner_id = next_user, current_turn = null,
+        turn_deadline_at = null, end_reason = 'completed'
+    where id = p_room_id;
     return;
   end if;
 
   if keep_turn and jsonb_array_length(own_hand) > 0 then
-    update public.gofish_rooms set current_turn = auth.uid() where id = p_room_id;
+    update public.gofish_rooms
+    set current_turn = auth.uid(),
+        turn_deadline_at = case when turn_timer_seconds = 0 then null else now() + make_interval(secs => turn_timer_seconds) end
+    where id = p_room_id;
     return;
   end if;
 
@@ -430,7 +487,10 @@ begin
     where room_id = p_room_id and left_at is null
     order by books desc, seat
     limit 1;
-    update public.gofish_rooms set status = 'finished', winner_id = next_user, current_turn = null where id = p_room_id;
+    update public.gofish_rooms
+    set status = 'finished', winner_id = next_user, current_turn = null,
+        turn_deadline_at = null, end_reason = 'completed'
+    where id = p_room_id;
     return;
   end if;
 
@@ -447,7 +507,122 @@ begin
     set deck_count = target.deck_count
     where id = p_room_id;
   end if;
-  update public.gofish_rooms set current_turn = next_user where id = p_room_id;
+  update public.gofish_rooms
+  set current_turn = next_user,
+      turn_deadline_at = case when turn_timer_seconds = 0 then null else now() + make_interval(secs => turn_timer_seconds) end
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function public.expire_gofish_turn(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+declare
+  target public.gofish_rooms%rowtype;
+  next_user uuid;
+  next_seat integer;
+  current_seat integer;
+  next_hand jsonb;
+  deck jsonb;
+  drawn jsonb;
+  player_name text;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to advance a timed turn.';
+  end if;
+  select * into target from public.gofish_rooms where id = p_room_id for update;
+  if not found or target.status <> 'playing' then
+    return;
+  end if;
+  if not exists (
+    select 1 from public.gofish_players
+    where room_id = p_room_id and user_id = auth.uid() and left_at is null
+  ) then
+    raise exception 'Only a player at this table can advance the turn.';
+  end if;
+  if target.turn_timer_seconds = 0 or target.turn_deadline_at is null or target.turn_deadline_at > now() then
+    return;
+  end if;
+
+  select seat into current_seat from public.gofish_players
+  where room_id = p_room_id and user_id = target.current_turn;
+  select player.user_id, player.seat, player.display_name into next_user, next_seat, player_name
+  from public.gofish_players as player
+  join public.gofish_hands as hand on hand.room_id = player.room_id and hand.user_id = player.user_id
+  where player.room_id = p_room_id
+    and player.left_at is null
+    and player.user_id <> target.current_turn
+    and (jsonb_array_length(hand.cards) > 0 or target.deck_count > 0)
+  order by case when player.seat > current_seat then 0 else 1 end, player.seat
+  limit 1;
+
+  if next_user is null then
+    select user_id into next_user
+    from public.gofish_players
+    where room_id = p_room_id and left_at is null
+    order by books desc, seat
+    limit 1;
+    update public.gofish_rooms
+    set status = 'finished', winner_id = next_user, current_turn = null,
+        turn_deadline_at = null, end_reason = 'completed',
+        last_action = 'The final turn expired. The round is complete.'
+    where id = p_room_id;
+    return;
+  end if;
+
+  if target.deck_count > 0 then
+    select cards into deck from public.gofish_decks where room_id = p_room_id for update;
+    select cards into next_hand from public.gofish_hands
+    where room_id = p_room_id and user_id = next_user for update;
+    if jsonb_array_length(next_hand) = 0 then
+      drawn := deck -> 0;
+      deck := deck - 0;
+      next_hand := jsonb_build_array(drawn);
+      update public.gofish_hands set cards = next_hand where room_id = p_room_id and user_id = next_user;
+      update public.gofish_decks set cards = deck where room_id = p_room_id;
+      target.deck_count := jsonb_array_length(deck);
+    end if;
+  end if;
+
+  update public.gofish_rooms
+  set current_turn = next_user,
+      deck_count = target.deck_count,
+      turn_deadline_at = case when turn_timer_seconds = 0 then null else now() + make_interval(secs => turn_timer_seconds) end,
+      last_action = 'Time ran out. ' || player_name || ' is up next.'
+  where id = p_room_id;
+end;
+$$;
+
+create or replace function public.end_gofish_room(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+declare
+  target public.gofish_rooms%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to end the game.';
+  end if;
+  select * into target from public.gofish_rooms where id = p_room_id for update;
+  if not found or target.host_id <> auth.uid() then
+    raise exception 'Only the room host can end the game.';
+  end if;
+  if target.status <> 'playing' then
+    raise exception 'Only an active game can be ended.';
+  end if;
+  update public.gofish_rooms
+  set status = 'finished',
+      winner_id = null,
+      current_turn = null,
+      turn_deadline_at = null,
+      end_reason = 'host_ended',
+      last_action = 'The host ended the game. No winner was recorded.'
+  where id = p_room_id;
 end;
 $$;
 
@@ -486,8 +661,10 @@ begin
   elsif room_status = 'playing' then
     update public.gofish_rooms
     set status = 'finished',
-        winner_id = new_host,
+        winner_id = null,
         current_turn = null,
+        turn_deadline_at = null,
+        end_reason = 'abandoned',
         last_action = 'A player left the table. The round has ended.'
     where id = p_room_id;
   else
@@ -506,12 +683,18 @@ revoke execute on function public.gofish_count_rank(jsonb, integer) from public,
 revoke execute on function public.create_gofish_room(text) from public, anon, authenticated;
 revoke execute on function public.join_gofish_room(text, text) from public, anon, authenticated;
 revoke execute on function public.start_gofish_room(uuid) from public, anon, authenticated;
+revoke execute on function public.set_gofish_timer(uuid, integer) from public, anon, authenticated;
 revoke execute on function public.ask_gofish_rank(uuid, uuid, integer) from public, anon, authenticated;
+revoke execute on function public.expire_gofish_turn(uuid) from public, anon, authenticated;
+revoke execute on function public.end_gofish_room(uuid) from public, anon, authenticated;
 revoke execute on function public.leave_gofish_room(uuid) from public, anon, authenticated;
 grant execute on function public.create_gofish_room(text) to authenticated;
 grant execute on function public.join_gofish_room(text, text) to authenticated;
 grant execute on function public.start_gofish_room(uuid) to authenticated;
+grant execute on function public.set_gofish_timer(uuid, integer) to authenticated;
 grant execute on function public.ask_gofish_rank(uuid, uuid, integer) to authenticated;
+grant execute on function public.expire_gofish_turn(uuid) to authenticated;
+grant execute on function public.end_gofish_room(uuid) to authenticated;
 grant execute on function public.leave_gofish_room(uuid) to authenticated;
 grant execute on function public.is_gofish_member(uuid) to authenticated;
 
@@ -776,3 +959,5 @@ grant execute on function public.create_card_tournament(text, text) to authentic
 grant execute on function public.join_card_tournament(uuid) to authenticated;
 grant execute on function public.record_card_tournament_result(uuid, boolean) to authenticated;
 grant execute on function public.get_card_tournament_standings(uuid) to authenticated;
+
+notify pgrst, 'reload schema';

@@ -364,6 +364,12 @@
     };
   }
 
+  function goFishSecondsRemaining(deadline, now = Date.now()) {
+    const deadlineTime = Date.parse(deadline);
+    if (!Number.isFinite(deadlineTime)) return null;
+    return Math.max(0, Math.ceil((deadlineTime - now) / 1000));
+  }
+
   const api = {
     suits: SUITS,
     redSuits: [...RED_SUITS],
@@ -385,6 +391,7 @@
     moveSelected,
     drawFromStock,
     hintFor,
+    goFishSecondsRemaining,
   };
   root.NovexCardGames = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

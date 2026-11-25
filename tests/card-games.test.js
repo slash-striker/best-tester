@@ -103,3 +103,11 @@ test("Blackjack supports one to six bots, ace scoring, and settled rounds", () =
   assert.ok(game.players.every((player) => ["win", "loss", "push", "bust"].includes(player.result)));
   assert.equal(games.normalizeBlackjack(game).players.length, 7);
 });
+
+test("Go Fish timer handles valid deadlines and expired turns", () => {
+  const now = Date.parse("2026-11-25T12:00:00Z");
+  assert.equal(games.goFishSecondsRemaining("2026-11-25T12:01:00Z", now), 60);
+  assert.equal(games.goFishSecondsRemaining("2026-11-25T12:00:00.001Z", now), 1);
+  assert.equal(games.goFishSecondsRemaining("2026-11-25T11:59:59Z", now), 0);
+  assert.equal(games.goFishSecondsRemaining(null, now), null);
+});

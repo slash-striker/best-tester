@@ -43,6 +43,8 @@ let sessionTimerEndsAt = 0;
 let gamesTab = "solitaire";
 let supabaseClient = null;
 let multiplayerState = { room: null, user: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
+let goFishTimerId = null;
+let goFishExpiryRequestedFor = "";
 let gamePointerDrag = null;
 let wheelSpinning = false;
 let cardClubRequest = 0;
@@ -1154,7 +1156,7 @@ async function fetchGoFishRoom(roomId) {
   const client = getSupabaseClient();
   const user = await ensureGameUser();
   const [roomResult, playersResult, handResult] = await Promise.all([
-    client.from("gofish_rooms").select("id, code, host_id, status, current_turn, deck_count, last_action, winner_id, created_at").eq("id", roomId).single(),
+    client.from("gofish_rooms").select("id, code, host_id, status, current_turn, deck_count, last_action, winner_id, turn_timer_seconds, turn_deadline_at, end_reason, created_at").eq("id", roomId).single(),
     client.from("gofish_players").select("user_id, display_name, seat, books, left_at").eq("room_id", roomId).is("left_at", null).order("seat"),
     client.from("gofish_hands").select("cards").eq("room_id", roomId).eq("user_id", user.id).maybeSingle(),
   ]);
@@ -1166,10 +1168,16 @@ async function fetchGoFishRoom(roomId) {
     players: playersResult.data || [],
     hand: handResult.data?.cards || [],
   };
+  if ((roomResult.data.status !== "playing" || !roomResult.data.turn_deadline_at) && goFishTimerId) {
+    clearInterval(goFishTimerId);
+    goFishTimerId = null;
+  }
   if (roomResult.data.status === "finished" && !data.games.completedRoomIds.includes(roomId)) {
     data.games.completedRoomIds.push(roomId);
-    data.games.goFishGames += 1;
-    recordCardGameResult("gofish", roomResult.data.winner_id === user.id);
+    if (roomResult.data.winner_id) {
+      data.games.goFishGames += 1;
+      recordCardGameResult("gofish", roomResult.data.winner_id === user.id);
+    }
     data.games = NovexCardGames.normalizeGameStats(data.games);
     persist();
   }
@@ -1272,6 +1280,66 @@ async function askGoFish(targetId, rank) {
   }
 }
 
+async function setGoFishTimer(seconds) {
+  try {
+    const { error } = await getSupabaseClient().rpc("set_gofish_timer", {
+      p_room_id: multiplayerState.room.id,
+      p_seconds: Number(seconds),
+    });
+    if (error) throw error;
+    await fetchGoFishRoom(multiplayerState.room.id);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+async function endGoFishGame() {
+  if (!window.confirm("End this game for everyone? No winner will be recorded.")) return;
+  try {
+    const { error } = await getSupabaseClient().rpc("end_gofish_room", { p_room_id: multiplayerState.room.id });
+    if (error) throw error;
+    await fetchGoFishRoom(multiplayerState.room.id);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+async function expireGoFishTurn(roomId, deadline) {
+  const requestKey = `${roomId}:${deadline}`;
+  if (goFishExpiryRequestedFor === requestKey) return;
+  goFishExpiryRequestedFor = requestKey;
+  try {
+    const { error } = await getSupabaseClient().rpc("expire_gofish_turn", { p_room_id: roomId });
+    if (error) throw error;
+    await fetchGoFishRoom(roomId);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+function updateGoFishCountdown() {
+  const room = multiplayerState.room;
+  const timer = viewRoot.querySelector("[data-gofish-countdown]");
+  if (!room || room.status !== "playing" || !room.turn_deadline_at) return;
+  const seconds = NovexCardGames.goFishSecondsRemaining(room.turn_deadline_at);
+  if (seconds === null) return;
+  if (timer) {
+    timer.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    timer.classList.toggle("is-urgent", seconds <= 10);
+    timer.setAttribute("aria-label", seconds === 0 ? "Turn time expired; advancing turn" : `${seconds} seconds left in this turn`);
+  }
+  if (seconds === 0) void expireGoFishTurn(room.id, room.turn_deadline_at);
+}
+
+function syncGoFishTurnTimer() {
+  if (goFishTimerId) clearInterval(goFishTimerId);
+  goFishTimerId = null;
+  const room = multiplayerState.room;
+  if (room?.status !== "playing" || !room.turn_deadline_at) return;
+  updateGoFishCountdown();
+  goFishTimerId = window.setInterval(updateGoFishCountdown, 1000);
+}
+
 async function leaveGoFish() {
   const roomId = multiplayerState.room?.id;
   try {
@@ -1279,6 +1347,9 @@ async function leaveGoFish() {
       const { error } = await getSupabaseClient().rpc("leave_gofish_room", { p_room_id: roomId });
       if (error) throw error;
     }
+    if (goFishTimerId) clearInterval(goFishTimerId);
+    goFishTimerId = null;
+    goFishExpiryRequestedFor = "";
     if (multiplayerState.channel) getSupabaseClient().removeChannel(multiplayerState.channel);
     multiplayerState = { room: null, user: multiplayerState.user, channel: null, subscribedRoomId: "", loading: false, error: "" };
     localStorage.removeItem("novex-gofish-room-id");
@@ -1295,20 +1366,31 @@ function renderGoFish() {
   const status = multiplayerState.error
     ? `<div class="multiplayer-notice error" role="alert">${escapeHtml(multiplayerState.error)}</div>`
     : issue ? `<div class="multiplayer-notice" role="status">${escapeHtml(issue)}<small>After setting up Supabase, run the SQL in <code>supabase/setup.sql</code>.</small></div>` : "";
+  const rules = `<details class="gofish-rules"><summary>How to play Go Fish</summary><ol>
+    <li>Ask another player for a rank you already hold, such as “Do you have any 7s?”</li>
+    <li>If they have that rank, they hand over every card of that rank and you ask again.</li>
+    <li>If they do not, draw one card from the pond. Drawing the rank you asked for earns another turn.</li>
+    <li>Collect all four suits of a rank to make a book. When all 13 books are made, the player with the most books wins.</li>
+    <li>If the pond is empty, turns continue until no cards can be played. Your hand is private.</li>
+  </ol></details>`;
   if (!room) {
     const inviteCode = new URLSearchParams(window.location.search).get("room") || "";
-    return `<section class="friend-lobby panel"><div class="friend-lobby-art"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div><div class="friend-lobby-copy"><span class="section-code">ONLINE TABLE / GO FISH</span><h2>Bring your people.</h2><p>Create a room, share the code, and play a friendly round together from anywhere. You can play with 2–4 people.</p></div>${status}<div class="friend-lobby-forms"><form id="game-host-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><button class="button button-primary" type="submit" ${issue || loading ? "disabled" : ""}>${loading ? "Connecting…" : "Create a room →"}</button></form><div class="lobby-divider"><span>OR JOIN WITH A CODE</span></div><form id="game-join-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><label class="setting-field"><span>ROOM CODE</span><input name="code" maxlength="6" pattern="[A-Za-z0-9]{6}" value="${escapeHtml(inviteCode)}" placeholder="ABC123" required></label><button class="button button-quiet" type="submit" ${issue || loading ? "disabled" : ""}>Join a friend's room ↗</button></form></div><p class="friend-privacy-note">Players join with a private anonymous game identity. No password, email, or learning profile is shared.</p></section>`;
+    return `<section class="friend-lobby panel"><div class="friend-lobby-art"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div><div class="friend-lobby-copy"><span class="section-code">ONLINE TABLE / GO FISH</span><h2>Bring your people.</h2><p>Create a room, share the code, and play a friendly round together from anywhere. You can play with 2–4 people.</p></div>${status}${rules}<div class="friend-lobby-forms"><form id="game-host-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><button class="button button-primary" type="submit" ${issue || loading ? "disabled" : ""}>${loading ? "Connecting…" : "Create a room →"}</button></form><div class="lobby-divider"><span>OR JOIN WITH A CODE</span></div><form id="game-join-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><label class="setting-field"><span>ROOM CODE</span><input name="code" maxlength="6" pattern="[A-Za-z0-9]{6}" value="${escapeHtml(inviteCode)}" placeholder="ABC123" required></label><button class="button button-quiet" type="submit" ${issue || loading ? "disabled" : ""}>Join a friend's room ↗</button></form></div><p class="friend-privacy-note">Players join with a private anonymous game identity. No password, email, or learning profile is shared.</p></section>`;
   }
   const playerName = (id) => room.players.find((player) => player.user_id === id)?.display_name || "Player";
   const opponents = room.players.filter((player) => player.user_id !== multiplayerState.user?.id);
   const currentTurn = room.current_turn === multiplayerState.user?.id;
   const rankOptions = [...new Set(room.hand.map((card) => Number(card.rank)))].sort((a, b) => a - b);
   const playerCards = room.hand.map((card) => `<span class="hand-card ${NovexCardGames.redSuits.includes(card.suit) ? "red" : "black"}"><b>${cardRankLabel(card.rank)}</b><i>${cardSuitSymbol(card.suit)}</i></span>`).join("");
+  const hasWinner = Boolean(room.winner_id);
+  const timer = room.turn_deadline_at
+    ? `<div class="gofish-turn-clock"><span>TIME LEFT THIS TURN</span><strong data-gofish-countdown>--:--</strong></div>`
+    : `<div class="gofish-turn-clock no-timer"><span>TURN TIMER</span><strong>No timer</strong></div>`;
   return `<section class="friend-room panel">
-    <div class="friend-room-head"><div><span class="section-code">${room.status === "lobby" ? "WAITING ROOM" : room.status === "finished" ? "ROUND COMPLETE" : "LIVE TABLE"} / GO FISH</span><h2>Room <span>${escapeHtml(room.code)}</span></h2><p>${room.status === "lobby" ? "Share the code to invite friends." : room.status === "finished" ? `${escapeHtml(playerName(room.winner_id))} takes this round!` : currentTurn ? "Your turn — ask for a rank in your hand." : `${escapeHtml(playerName(room.current_turn))} is taking a turn.`}</p></div><div class="friend-room-actions"><button type="button" class="button button-outline" data-action="copy-room-link">Copy invite link</button><button type="button" class="button button-quiet" data-action="leave-room">Leave room</button></div></div>
-    ${status}
+    <div class="friend-room-head"><div><span class="section-code">${room.status === "lobby" ? "WAITING ROOM" : room.status === "finished" ? "ROUND COMPLETE" : "LIVE TABLE"} / GO FISH</span><h2>Room <span>${escapeHtml(room.code)}</span></h2><p>${room.status === "lobby" ? "Share the code to invite friends." : room.status === "finished" ? hasWinner ? `${escapeHtml(playerName(room.winner_id))} wins with the most books.` : room.end_reason === "host_ended" ? "The host ended the game. No winner was recorded." : "The round ended without a winner." : currentTurn ? "Your turn — ask for a rank in your hand." : `${escapeHtml(playerName(room.current_turn))} is taking a turn.`}</p></div><div class="friend-room-actions"><button type="button" class="button button-outline" data-action="copy-room-link">Copy invite link</button><button type="button" class="button button-quiet" data-action="leave-room">Leave room</button></div></div>
+    ${status}${rules}
     <div class="friend-players">${room.players.map((player) => `<div class="friend-player ${player.user_id === room.current_turn && room.status === "playing" ? "is-turn" : ""}"><span class="friend-player-avatar">${escapeHtml(player.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(player.display_name)}${player.user_id === multiplayerState.user?.id ? " (you)" : ""}</strong><small>${player.books} ${player.books === 1 ? "book" : "books"}${player.user_id === room.host_id ? " · host" : ""}</small></span></div>`).join("")}</div>
-    ${room.status === "lobby" ? `<div class="friend-lobby-wait"><div class="playing-card lobby-card red"><span class="card-center">♥</span></div><div><strong>${room.players.length}/4 players at the table</strong><small>${room.players.length < 2 ? "Waiting for a friend to join…" : "Ready when the host is."}</small></div>${room.host_id === multiplayerState.user?.id ? `<button class="button button-primary" type="button" data-action="start-gofish" ${room.players.length < 2 ? "disabled" : ""}>Deal the cards →</button>` : ""}</div>` : room.status === "playing" ? `<div class="gofish-play-area"><div class="gofish-table-center"><span class="gofish-pile">▧</span><strong>${room.deck_count} cards in the pond</strong><small>${escapeHtml(room.last_action || "The cards are ready.")}</small></div><div class="gofish-hand"><div class="section-heading"><div><span class="section-code">YOUR HAND / ${room.hand.length} CARDS</span><h3>What you can ask for</h3></div></div><div class="hand-cards">${playerCards || "<small>Your hand is empty; draw cards to continue.</small>"}</div></div>${currentTurn ? `<form id="gofish-ask-form"><label class="setting-field"><span>ASK A FRIEND</span><select name="target" required>${opponents.map((player) => `<option value="${escapeHtml(player.user_id)}">${escapeHtml(player.display_name)}</option>`).join("")}</select></label><label class="setting-field"><span>ASK FOR A RANK IN YOUR HAND</span><select name="rank" required>${rankOptions.map((rank) => `<option value="${rank}">${cardRankLabel(rank)}s</option>`).join("")}</select></label><button class="button button-primary" type="submit" ${!opponents.length || !rankOptions.length ? "disabled" : ""}>Ask for cards →</button></form>` : `<div class="friend-turn-note">Your hand is private. You’ll get a turn when it’s your seat’s turn.</div>`}</div>` : `<div class="friend-round-finished"><span>✦</span><strong>Nice game!</strong><p>Ready to shuffle and play another?</p><button class="button button-primary" type="button" data-action="leave-room">Back to rooms →</button></div>`}
+    ${room.status === "lobby" ? `<div class="friend-lobby-wait"><div class="playing-card lobby-card red"><span class="card-center">♥</span></div><div><strong>${room.players.length}/4 players at the table</strong><small>${room.players.length < 2 ? "Waiting for a friend to join…" : "Ready when the host is."}</small></div>${room.host_id === multiplayerState.user?.id ? `<label class="gofish-timer-setting"><span>TURN TIMER</span><select data-gofish-timer aria-label="Turn timer"><option value="0" ${room.turn_timer_seconds === 0 ? "selected" : ""}>No timer</option><option value="30" ${room.turn_timer_seconds === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${room.turn_timer_seconds === 60 ? "selected" : ""}>60 seconds</option><option value="90" ${room.turn_timer_seconds === 90 ? "selected" : ""}>90 seconds</option></select></label><button class="button button-primary" type="button" data-action="start-gofish" ${room.players.length < 2 ? "disabled" : ""}>Deal the cards →</button>` : ""}</div>` : room.status === "playing" ? `<div class="gofish-game-summary"><div class="gofish-table-center"><span class="gofish-pile">▧</span><strong>${room.deck_count} cards in the pond</strong><small>${escapeHtml(room.last_action || "The cards are ready.")}</small></div>${timer}<div class="gofish-score-summary"><span>BOOKS COLLECTED</span><strong>${room.players.reduce((sum, player) => sum + player.books, 0)} <small>of 13</small></strong></div></div><div class="gofish-play-area"><div class="gofish-hand"><div class="section-heading"><div><span class="section-code">YOUR HAND / ${room.hand.length} CARDS</span><h3>What you can ask for</h3></div></div><div class="hand-cards">${playerCards || "<small>Your hand is empty; draw cards to continue.</small>"}</div></div>${currentTurn ? `<form id="gofish-ask-form"><label class="setting-field"><span>ASK A FRIEND</span><select name="target" required>${opponents.map((player) => `<option value="${escapeHtml(player.user_id)}">${escapeHtml(player.display_name)}</option>`).join("")}</select></label><label class="setting-field"><span>ASK FOR A RANK IN YOUR HAND</span><select name="rank" required>${rankOptions.map((rank) => `<option value="${rank}">${cardRankLabel(rank)}s</option>`).join("")}</select></label><button class="button button-primary" type="submit" ${!opponents.length || !rankOptions.length ? "disabled" : ""}>Ask for cards →</button></form>` : `<div class="friend-turn-note">${escapeHtml(playerName(room.current_turn))} is up. Your hand is private; the table will update when your turn starts.</div>`}</div>${room.host_id === multiplayerState.user?.id ? `<div class="gofish-host-actions"><button type="button" class="button button-danger" data-action="end-gofish">End game</button><small>Ends the round for everyone without naming a winner.</small></div>` : ""}` : `<div class="friend-round-finished"><span>${hasWinner ? "✦" : "↗"}</span><strong>${hasWinner ? "Round complete" : "Game ended"}</strong><p>${hasWinner ? `${escapeHtml(playerName(room.winner_id))} collected the most books.` : "No winner or game result was recorded."}</p><button class="button button-primary" type="button" data-action="leave-room">Back to rooms →</button></div>`}
     <p class="friend-privacy-note">Card hands are private to each player. Game actions are checked by the database before the table updates.</p>
   </section>`;
 }
@@ -1331,6 +1413,7 @@ function renderGames() {
             : renderGoFish()}
     <div class="games-footnote"><span>✧</span> ${data.games.totalGamesPlayed} games played · ${data.games.highestWinStreak} best win streak · ${data.games.goFishGames} online Go Fish rounds</div>
   `;
+  if (gamesTab === "friends") syncGoFishTurnTimer();
   if (gamesTab === "community" && !supabaseSetupMessage() && !cardClubState.loading && !cardClubState.loaded) {
     void loadCardClub();
   }
@@ -2950,6 +3033,8 @@ viewRoot.addEventListener("click", (event) => {
     renderBudget();
   } else if (action === "start-gofish") {
     void startGoFish();
+  } else if (action === "end-gofish") {
+    void endGoFishGame();
   } else if (action === "leave-room") {
     void leaveGoFish();
   } else if (action === "copy-room-link") {
@@ -3030,7 +3115,9 @@ viewRoot.addEventListener("click", (event) => {
 });
 
 viewRoot.addEventListener("change", (event) => {
-  if (event.target.matches("[data-question-type]")) {
+  if (event.target.matches("[data-gofish-timer]")) {
+    void setGoFishTimer(event.target.value);
+  } else if (event.target.matches("[data-question-type]")) {
     testOptions.types[event.target.dataset.questionType] = event.target.checked;
     const deck = activeDeck();
     if (deck) {

@@ -26,9 +26,10 @@ The username/password profile is a local convenience, not secure authentication.
 - Speed Run, Survival, Memory Rush, Perfect Run, and unlockable boss battles.
 - A private budgeting lab with a flexible 50/30/20 starter split, manual expenses, savings goals, spending progress, and practical tips. It does not connect to banks, and budget data stays in the current browser profile.
 - Klondike Solitaire with drag-and-drop and tap controls, plus FreeCell and Blackjack with 1–6 bots.
-- Room-code Go Fish for 2–4 friends with private hands and live turns, plus opt-in casual leaderboards and 24-hour tournaments.
+- Room-code Go Fish for 2–4 friends with private hands, readable rules, host-selectable turn timers, host-controlled game ending, and live turns, plus opt-in casual leaderboards and 24-hour tournaments.
 - Customizable operator profile, favorite game/deck, collection showcase, total game and winning-streak stats, a once-daily prize wheel, skill-point tree, unlockable themes, frames, titles, and victory/reveal effects.
 - Cyberpunk-inspired dark/light themes, animated UI details, responsive navigation, and reduced-motion support.
+- Responsive layouts reserve lower-page space for hosting-provider badges so they do not cover the last controls or content on phones.
 
 The app's study profiles, budgets, and single-player card games are local to each browser. Go Fish, leaderboard scores, and tournaments use Supabase anonymous game identities and database functions. Leaderboard and tournament results are self-reported for friendly competition; they are not cheat-proof rankings. Netlify continues to host the static site; it does not provide the multiplayer database.
 
@@ -38,6 +39,8 @@ The app's study profiles, budgets, and single-player card games are local to eac
 2. In the Supabase SQL Editor, run [`supabase/setup.sql`](supabase/setup.sql).
 3. Copy the Supabase project URL and its **anon/public** key into `supabase-config.js` as `url` and `anonKey`, then deploy the updated files to Netlify.
 4. Open **Card games → Go Fish** to create a room, or **Leaderboard** to opt into public scores and create or join a tournament.
+
+If the project was set up before a newer version of this app, rerun the **latest complete `supabase/setup.sql`** in the Supabase SQL Editor after deploying. The setup is safe to rerun and applies the latest tables, columns, and functions; this also resolves missing-table errors such as `Could not find the table 'public.card_leaderboard' in the schema cache`. The script asks PostgREST to refresh its schema cache at the end.
 
 The anon/public key is intended for browser use; database policies and functions restrict room access, keep hands private, and control score/tournament writes. Leaderboard participation is opt-in and shares only the chosen display name and card-game totals. Never put a Supabase `service_role` key in this site. Online play requires this setup; budgets and solo games still work without it. Supabase service limits and availability depend on the project plan.
 
