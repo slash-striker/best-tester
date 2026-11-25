@@ -528,3 +528,251 @@ begin
   end if;
 end;
 $$;
+
+-- Public, opt-in card totals. These are casual player-reported scores because
+-- the card games themselves run in the browser.
+create table if not exists public.card_leaderboard (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null check (char_length(display_name) between 1 and 28),
+  total_wins integer not null default 0 check (total_wins between 0 and 1000000000),
+  total_games integer not null default 0 check (total_games between total_wins and 1000000000),
+  current_streak integer not null default 0 check (current_streak between 0 and 1000000000),
+  best_streak integer not null default 0 check (best_streak between current_streak and 1000000000),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.card_tournaments (
+  id uuid primary key default gen_random_uuid(),
+  host_id uuid not null references auth.users(id) on delete cascade,
+  name text not null check (char_length(name) between 1 and 48),
+  game_type text not null check (game_type in ('solitaire', 'freecell', 'blackjack')),
+  starts_at timestamptz not null default now(),
+  ends_at timestamptz not null,
+  participant_count integer not null default 0 check (participant_count between 0 and 1000000),
+  total_games integer not null default 0 check (total_games between 0 and 1000000000),
+  created_at timestamptz not null default now(),
+  check (ends_at > starts_at and ends_at <= starts_at + interval '7 days')
+);
+
+create table if not exists public.card_tournament_entries (
+  tournament_id uuid not null references public.card_tournaments(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  wins integer not null default 0 check (wins between 0 and 1000000000),
+  games integer not null default 0 check (games between wins and 1000000000),
+  joined_at timestamptz not null default now(),
+  primary key (tournament_id, user_id)
+);
+
+alter table public.card_leaderboard enable row level security;
+alter table public.card_tournaments enable row level security;
+alter table public.card_tournament_entries enable row level security;
+
+drop policy if exists "Authenticated players can read public card scores" on public.card_leaderboard;
+create policy "Authenticated players can read public card scores"
+  on public.card_leaderboard for select to authenticated using (true);
+
+drop policy if exists "Authenticated players can read open card tournaments" on public.card_tournaments;
+create policy "Authenticated players can read open card tournaments"
+  on public.card_tournaments for select to authenticated using (ends_at > now());
+
+drop policy if exists "Players can read their own tournament entries" on public.card_tournament_entries;
+create policy "Players can read their own tournament entries"
+  on public.card_tournament_entries for select to authenticated using (user_id = auth.uid());
+
+revoke all on public.card_leaderboard, public.card_tournaments, public.card_tournament_entries
+  from public, anon, authenticated;
+grant select (display_name, total_wins, total_games, best_streak, updated_at)
+  on public.card_leaderboard to authenticated;
+grant select (id, name, game_type, starts_at, ends_at, participant_count, total_games)
+  on public.card_tournaments to authenticated;
+grant select (tournament_id, user_id, wins, games, joined_at)
+  on public.card_tournament_entries to authenticated;
+
+create or replace function public.get_my_card_club_status()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog
+as $$
+  select jsonb_build_object(
+    'joined', exists (
+      select 1 from public.card_leaderboard where user_id = auth.uid()
+    ),
+    'tournament_ids', coalesce((
+      select jsonb_agg(entry.tournament_id)
+      from public.card_tournament_entries as entry
+      join public.card_tournaments as tournament on tournament.id = entry.tournament_id
+      where entry.user_id = auth.uid() and tournament.ends_at > now()
+    ), '[]'::jsonb)
+  );
+$$;
+
+create or replace function public.join_card_leaderboard(p_display_name text)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to join the card leaderboard.';
+  end if;
+  if char_length(trim(coalesce(p_display_name, ''))) not between 1 and 28 then
+    raise exception 'Choose a display name between 1 and 28 characters.';
+  end if;
+  insert into public.card_leaderboard(user_id, display_name)
+  values (auth.uid(), trim(p_display_name))
+  on conflict (user_id) do update
+    set display_name = excluded.display_name, updated_at = now();
+end;
+$$;
+
+create or replace function public.record_card_game_result(p_game_type text, p_won boolean)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  if auth.uid() is null or p_won is null or p_game_type is null or
+     p_game_type not in ('solitaire', 'freecell', 'blackjack', 'gofish') then
+    raise exception 'Invalid card game result.';
+  end if;
+  update public.card_leaderboard
+  set total_games = total_games + 1,
+      total_wins = total_wins + case when p_won then 1 else 0 end,
+      current_streak = case when p_won then current_streak + 1 else 0 end,
+      best_streak = greatest(best_streak, case when p_won then current_streak + 1 else current_streak end),
+      updated_at = now()
+  where user_id = auth.uid();
+  if not found then
+    raise exception 'Join the public leaderboard before submitting scores.';
+  end if;
+end;
+$$;
+
+create or replace function public.create_card_tournament(p_name text, p_game_type text)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+declare
+  tournament_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to create a tournament.';
+  end if;
+  if char_length(trim(coalesce(p_name, ''))) not between 1 and 48 or
+     p_game_type not in ('solitaire', 'freecell', 'blackjack') then
+    raise exception 'Choose a tournament name and supported card game.';
+  end if;
+  if not exists (select 1 from public.card_leaderboard where user_id = auth.uid()) then
+    raise exception 'Join the card leaderboard before creating a tournament.';
+  end if;
+  if (select count(*) from public.card_tournaments
+      where host_id = auth.uid() and ends_at > now()) >= 3 then
+    raise exception 'You can host up to three active tournaments.';
+  end if;
+  insert into public.card_tournaments(host_id, name, game_type, starts_at, ends_at)
+  values (auth.uid(), trim(p_name), p_game_type, now(), now() + interval '24 hours')
+  returning id into tournament_id;
+  insert into public.card_tournament_entries(tournament_id, user_id)
+  values (tournament_id, auth.uid());
+  update public.card_tournaments set participant_count = 1 where id = tournament_id;
+  return tournament_id;
+end;
+$$;
+
+create or replace function public.join_card_tournament(p_tournament_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to join a tournament.';
+  end if;
+  if not exists (select 1 from public.card_leaderboard where user_id = auth.uid()) then
+    raise exception 'Join the card leaderboard before entering a tournament.';
+  end if;
+  if not exists (
+    select 1 from public.card_tournaments
+    where id = p_tournament_id and starts_at <= now() and ends_at > now()
+  ) then
+    raise exception 'That tournament is not currently open.';
+  end if;
+  insert into public.card_tournament_entries(tournament_id, user_id)
+  values (p_tournament_id, auth.uid())
+  on conflict (tournament_id, user_id) do nothing;
+  update public.card_tournaments
+  set participant_count = (
+    select count(*)::integer from public.card_tournament_entries
+    where tournament_id = p_tournament_id
+  )
+  where id = p_tournament_id;
+end;
+$$;
+
+create or replace function public.record_card_tournament_result(p_tournament_id uuid, p_won boolean)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog
+as $$
+begin
+  if auth.uid() is null or p_won is null then
+    raise exception 'Invalid tournament result.';
+  end if;
+  update public.card_tournament_entries as entry
+  set games = entry.games + 1,
+      wins = entry.wins + case when p_won then 1 else 0 end
+  from public.card_tournaments as tournament
+  where entry.tournament_id = p_tournament_id
+    and entry.user_id = auth.uid()
+    and tournament.id = entry.tournament_id
+    and tournament.starts_at <= now()
+    and tournament.ends_at > now();
+  if not found then
+    raise exception 'Join an active tournament before submitting results.';
+  end if;
+  update public.card_tournaments
+  set total_games = total_games + 1
+  where id = p_tournament_id;
+end;
+$$;
+
+create or replace function public.get_card_tournament_standings(p_tournament_id uuid)
+returns table(display_name text, wins integer, games integer)
+language sql
+stable
+security definer
+set search_path = pg_catalog
+as $$
+  select board.display_name, entry.wins, entry.games
+  from public.card_tournament_entries as entry
+  join public.card_leaderboard as board on board.user_id = entry.user_id
+  join public.card_tournaments as tournament on tournament.id = entry.tournament_id
+  where entry.tournament_id = p_tournament_id
+    and tournament.ends_at > now()
+    and auth.uid() is not null
+  order by entry.wins desc, entry.games desc, board.display_name
+  limit 50;
+$$;
+
+revoke execute on function public.get_my_card_club_status() from public, anon, authenticated;
+revoke execute on function public.join_card_leaderboard(text) from public, anon, authenticated;
+revoke execute on function public.record_card_game_result(text, boolean) from public, anon, authenticated;
+revoke execute on function public.create_card_tournament(text, text) from public, anon, authenticated;
+revoke execute on function public.join_card_tournament(uuid) from public, anon, authenticated;
+revoke execute on function public.record_card_tournament_result(uuid, boolean) from public, anon, authenticated;
+revoke execute on function public.get_card_tournament_standings(uuid) from public, anon, authenticated;
+grant execute on function public.get_my_card_club_status() to authenticated;
+grant execute on function public.join_card_leaderboard(text) to authenticated;
+grant execute on function public.record_card_game_result(text, boolean) to authenticated;
+grant execute on function public.create_card_tournament(text, text) to authenticated;
+grant execute on function public.join_card_tournament(uuid) to authenticated;
+grant execute on function public.record_card_tournament_result(uuid, boolean) to authenticated;
+grant execute on function public.get_card_tournament_standings(uuid) to authenticated;

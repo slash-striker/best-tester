@@ -55,3 +55,51 @@ test("stock recycles the waste in playable order and saved deals are validated",
   assert.equal(games.normalizeSolitaire(corrupted), null);
   assert.equal(games.normalizeGameStats(null).solitaire, null);
 });
+
+test("FreeCell deals a complete face-up deck and only permits legal color/rank moves", () => {
+  const game = games.createFreecellGame(() => 0.37);
+  const cards = [...game.tableau.flat(), ...game.cells.filter(Boolean)];
+  assert.equal(cards.length, 52);
+  assert.equal(new Set(cards.map((card) => card.id)).size, 52);
+  assert.ok(cards.every((card) => card.faceUp));
+
+  const deck = games.makeDeck(() => 0.2);
+  const card = (suit, rank) => ({ ...deck.find((entry) => entry.suit === suit && entry.rank === rank), faceUp: true });
+  const moving = card("clubs", 7);
+  const target = card("hearts", 8);
+  const used = new Set([moving.id, target.id]);
+  const rest = deck.filter((entry) => !used.has(entry.id)).map((entry) => ({ ...entry, faceUp: true }));
+  const state = {
+    tableau: [[moving], [target], rest.slice(0, 9), rest.slice(9, 18), rest.slice(18, 27), rest.slice(27, 36), rest.slice(36, 44), rest.slice(44)],
+    cells: Array(4).fill(null),
+    foundations: games.suits.map((suit) => ({ suit, cards: [] })),
+    selected: { zone: "tableau", column: 0 },
+    moves: 0,
+    won: false,
+  };
+  const illegal = structuredClone(state);
+  illegal.tableau[1] = [card("spades", 8)];
+  assert.equal(games.moveFreecellCard(illegal, { zone: "tableau", column: 1 }), false);
+  assert.equal(illegal.tableau[0][0].id, moving.id);
+  assert.equal(games.moveFreecellCard(state, { zone: "tableau", column: 1 }), true);
+  assert.equal(state.tableau[1].at(-1).id, moving.id);
+  assert.equal(games.normalizeFreecell(state).tableau.flat().length, 52);
+
+  state.selected = { zone: "tableau", column: 1 };
+  assert.equal(games.moveFreecellCard(state, { zone: "cell", index: 0 }), true);
+  assert.equal(state.cells[0].id, moving.id);
+});
+
+test("Blackjack supports one to six bots, ace scoring, and settled rounds", () => {
+  assert.equal(games.blackjackScore([{ rank: 1 }, { rank: 9 }, { rank: 1 }]), 21);
+  assert.equal(games.blackjackScore([{ rank: 1 }, { rank: 9 }, { rank: 8 }]), 18);
+
+  const game = games.createBlackjackGame(6, () => 0.37);
+  assert.equal(game.players.length, 7);
+  assert.equal(game.botCount, 6);
+  assert.equal([...game.deck, ...game.dealer.hand, ...game.players.flatMap((player) => player.hand)].length, 52);
+  assert.equal(games.standBlackjack(game), true);
+  assert.equal(game.status, "settled");
+  assert.ok(game.players.every((player) => ["win", "loss", "push", "bust"].includes(player.result)));
+  assert.equal(games.normalizeBlackjack(game).players.length, 7);
+});

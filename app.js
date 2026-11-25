@@ -18,6 +18,13 @@ const csvInput = document.querySelector("#csv-input");
 const backupInput = document.querySelector("#backup-input");
 const authScreen = document.querySelector("#auth-screen");
 const authForm = document.querySelector("#auth-form");
+const AVATAR_OPTIONS = ["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍", "🦊", "🐙", "🌙", "👑", "🐉", "🦄"];
+const FAVORITE_GAMES = [
+  ["solitaire", "Klondike Solitaire"],
+  ["freecell", "FreeCell"],
+  ["blackjack", "Blackjack"],
+  ["gofish", "Go Fish"],
+];
 let data = loadData();
 let settings = loadSettings();
 let currentAccount = null;
@@ -36,6 +43,10 @@ let sessionTimerEndsAt = 0;
 let gamesTab = "solitaire";
 let supabaseClient = null;
 let multiplayerState = { room: null, user: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
+let gamePointerDrag = null;
+let wheelSpinning = false;
+let cardClubRequest = 0;
+let cardClubState = { loading: false, loaded: false, error: "", leaderboard: [], tournaments: [], standings: [], joined: false, joinedTournamentIds: [], activeTournamentId: "" };
 const ACHIEVEMENTS = [
   { id: "first-session", name: "First Contact", description: "Complete your first learning session.", icon: "⌁" },
   { id: "night-owl", name: "Night Owl", description: "Study after midnight.", icon: "☾", secret: true },
@@ -56,6 +67,16 @@ const SHOP_ITEMS = [
   { id: "theme-red", name: "Red Sector", description: "High-alert crimson command deck.", type: "theme", value: "red", price: 180, rarity: "EPIC" },
   { id: "frame-orbit", name: "Orbital Frame", description: "A rotating holo-ring for your profile.", type: "frame", value: "orbit", price: 90, rarity: "COMMON" },
   { id: "frame-glitch", name: "Glitch Frame", description: "Chromatic edges. Maximum signal.", type: "frame", value: "glitch", price: 140, rarity: "RARE" },
+  { id: "card-back-royal", name: "Royal Nebula Back", description: "Deep purple foil with a constellation crest.", type: "cardBack", value: "royal", price: 160, rarity: "RARE" },
+  { id: "card-back-sakura", name: "Sakura Night Back", description: "Petal-pink ink drifting across midnight.", type: "cardBack", value: "sakura", price: 220, rarity: "EPIC" },
+  { id: "card-back-aurora", name: "Aurora Vault Back", description: "An animated ribbon of northern lights.", type: "cardBack", value: "aurora", price: 420, rarity: "LEGENDARY" },
+  { id: "card-effect-glimmer", name: "Glimmer Reveal", description: "Cards shimmer into view with a soft sparkle.", type: "cardEffect", value: "glimmer", price: 180, rarity: "RARE" },
+  { id: "card-effect-prism", name: "Prism Reveal", description: "A prismatic flash follows every reveal.", type: "cardEffect", value: "prism", price: 360, rarity: "EPIC" },
+  { id: "table-velvet", name: "Velvet Lounge", description: "A rich plum table made for a late-night game.", type: "tableTheme", value: "velvet", price: 200, rarity: "EPIC" },
+  { id: "table-gold", name: "Gilded Parlor", description: "Warm gold felt with a polished edge.", type: "tableTheme", value: "gold", price: 480, rarity: "LEGENDARY" },
+  { id: "banner-constellation", name: "Star Cartographer", description: "A custom constellation banner for your profile.", type: "banner", value: "constellation", price: 220, rarity: "EPIC" },
+  { id: "avatar-fox", name: "Foxfire Avatar", description: "A clever fox with a bright little spark.", type: "avatar", value: "🦊", price: 120, rarity: "RARE" },
+  { id: "deck-royal", name: "Royal Card Set", description: "A refined face-card treatment for your favorite deck.", type: "cardDeck", value: "royal", price: 260, rarity: "EPIC" },
   { id: "title-ghost", name: "Ghost Protocol", description: "An encrypted profile title.", type: "title", value: "Ghost Protocol", price: 75, rarity: "COMMON" },
   { id: "title-neural", name: "Neural Architect", description: "A title for builders of memory.", type: "title", value: "Neural Architect", price: 130, rarity: "RARE" },
   { id: "streak-freeze", name: "Streak Shield", description: "Automatically protects one missed day.", type: "freeze", value: 1, price: 100, rarity: "UTILITY" },
@@ -65,6 +86,13 @@ const DAILY_CHALLENGES = [
   { id: "correct", name: "Clean Data", description: "Get 5 answers right today.", target: 5, metric: "correct", reward: 45 },
   { id: "sessions", name: "Stay Connected", description: "Complete 2 sessions today.", target: 2, metric: "sessions", reward: 35 },
   { id: "modes", name: "Protocol Switch", description: "Try 3 different game modes.", target: 3, metric: "modes", reward: 50 },
+];
+const DAILY_WHEEL_PRIZES = [
+  { label: "25 credits", weight: 35, credits: 25 },
+  { label: "40 credits", weight: 25, credits: 40 },
+  { label: "60 credits", weight: 20, credits: 60 },
+  { label: "100 credits", weight: 12, credits: 100 },
+  { label: "Rare cosmetic", weight: 8, cosmetic: true },
 ];
 
 function uid() {
@@ -93,9 +121,12 @@ function defaultProgression() {
     perfectSessions: 0,
     correctTotal: 0,
     answeredTotal: 0,
-    profile: { displayName: "", title: "", frame: "", avatar: "⌬" },
+    profile: { displayName: "", title: "", frame: "", avatar: "⌬", banner: "default", favoriteGame: "solitaire", favoriteDeck: "classic", showcase: [] },
     owned: ["theme-default"],
     equippedTheme: "default",
+    cardBack: "classic",
+    cardEffect: "none",
+    tableTheme: "neon",
     achievements: [],
     daily: { date: "", answered: 0, correct: 0, sessions: 0, completed: [] },
     skillPoints: 0,
@@ -153,6 +184,7 @@ function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === D
 }
 
 function normalizeProgression(progress = {}) {
+  if (!progress || typeof progress !== "object" || Array.isArray(progress)) progress = {};
   const defaults = defaultProgression();
   const nonnegative = (value) => Math.min(1_000_000_000, Math.max(0, Math.floor(Number(value) || 0)));
   const dateValue = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
@@ -169,6 +201,9 @@ function normalizeProgression(progress = {}) {
     lastStudyDate: dateValue(progress.lastStudyDate),
     lastActiveDate: dateValue(progress.lastActiveDate),
     equippedTheme: typeof progress.equippedTheme === "string" ? progress.equippedTheme : "default",
+    cardBack: typeof progress.cardBack === "string" ? progress.cardBack : "classic",
+    cardEffect: typeof progress.cardEffect === "string" ? progress.cardEffect : "none",
+    tableTheme: typeof progress.tableTheme === "string" ? progress.tableTheme : "neon",
     freezeCount: nonnegative(progress.freezeCount),
     perfectSessions: nonnegative(progress.perfectSessions),
     correctTotal: nonnegative(progress.correctTotal),
@@ -178,7 +213,11 @@ function normalizeProgression(progress = {}) {
       displayName: typeof profile.displayName === "string" ? profile.displayName.slice(0, 28) : "",
       title: typeof profile.title === "string" ? profile.title.slice(0, 40) : "",
       frame: typeof profile.frame === "string" ? profile.frame : "",
-      avatar: typeof profile.avatar === "string" ? profile.avatar : "⌬",
+      avatar: AVATAR_OPTIONS.includes(profile.avatar) ? profile.avatar : "⌬",
+      banner: typeof profile.banner === "string" ? profile.banner : "default",
+      favoriteGame: FAVORITE_GAMES.some(([id]) => id === profile.favoriteGame) ? profile.favoriteGame : "solitaire",
+      favoriteDeck: typeof profile.favoriteDeck === "string" ? profile.favoriteDeck : "classic",
+      showcase: Array.isArray(profile.showcase) ? [...new Set(profile.showcase.filter((id) => typeof id === "string"))].slice(0, 4) : [],
     },
     daily: {
       ...defaults.daily,
@@ -196,6 +235,29 @@ function normalizeProgression(progress = {}) {
     owned: Array.isArray(progress.owned) ? [...new Set(["theme-default", ...progress.owned])] : defaults.owned,
     defeatedBosses: Array.isArray(progress.defeatedBosses) ? [...new Set(progress.defeatedBosses.map(Number).filter((number) => Number.isInteger(number) && number > 0))] : [],
   };
+}
+
+function validateProgressionCosmetics(progression) {
+  const owned = new Set(progression.owned.filter((id) =>
+    id === "theme-default" || SHOP_ITEMS.some((item) => item.id === id)
+  ));
+  progression.owned = [...owned];
+  const isOwnedValue = (type, value) => SHOP_ITEMS.some((item) =>
+    item.type === type && item.value === value && owned.has(item.id)
+  );
+  if (!isOwnedValue("theme", progression.equippedTheme)) progression.equippedTheme = "default";
+  if (!isOwnedValue("cardBack", progression.cardBack)) progression.cardBack = "classic";
+  if (!isOwnedValue("cardEffect", progression.cardEffect)) progression.cardEffect = "none";
+  if (!isOwnedValue("tableTheme", progression.tableTheme)) progression.tableTheme = "neon";
+  if (progression.profile.frame && !isOwnedValue("frame", progression.profile.frame)) progression.profile.frame = "";
+  if (progression.profile.title && !isOwnedValue("title", progression.profile.title)) progression.profile.title = "";
+  if (progression.profile.banner !== "default" && !isOwnedValue("banner", progression.profile.banner)) progression.profile.banner = "default";
+  if (!AVATAR_OPTIONS.slice(0, 8).includes(progression.profile.avatar) &&
+      !isOwnedValue("avatar", progression.profile.avatar)) progression.profile.avatar = "⌬";
+  if (progression.profile.favoriteDeck !== "classic" &&
+      !isOwnedValue("cardDeck", progression.profile.favoriteDeck)) progression.profile.favoriteDeck = "classic";
+  progression.profile.showcase = progression.profile.showcase.filter((id) => owned.has(id)).slice(0, 4);
+  return progression;
 }
 
 function loadSettings(storageKey = SETTINGS_KEY) {
@@ -273,6 +335,7 @@ function accountStorageKey(kind, username) {
 
 function normalizeData() {
   data.progression = normalizeProgression(data.progression);
+  data.progression = validateProgressionCosmetics(data.progression);
   data.budget = NovexBudget.normalizeBudget(data.budget);
   data.games = NovexCardGames.normalizeGameStats(data.games);
   data.decks = data.decks.filter((deck) => deck && typeof deck.id === "string" && Array.isArray(deck.pairs)).map((deck) => ({
@@ -520,6 +583,10 @@ function updateHeader() {
   document.body.dataset.theme = settings.theme;
   document.body.dataset.skin = data.progression?.equippedTheme || "default";
   document.body.dataset.frame = data.progression?.profile?.frame || "";
+  document.body.dataset.cardBack = data.progression?.cardBack || "classic";
+  document.body.dataset.cardEffect = data.progression?.cardEffect || "none";
+  document.body.dataset.tableTheme = data.progression?.tableTheme || "neon";
+  document.body.dataset.profileBanner = data.progression?.profile?.banner || "default";
   document.querySelector("#theme-toggle").textContent = settings.theme === "dark" ? "☼" : "☾";
   document.querySelector("#theme-toggle").setAttribute("aria-label", `Switch to ${settings.theme === "dark" ? "light" : "dark"} theme`);
   document.querySelectorAll("[data-nav]").forEach((button) => {
@@ -960,10 +1027,15 @@ function cardSuitSymbol(suit) {
 function solitaireCardMarkup(card, source, selected = false) {
   const color = NovexCardGames.redSuits.includes(card.suit) ? "red" : "black";
   const face = card.faceUp;
-  const sourceAttributes = source ? `data-card-source="${source.zone}" ${source.zone === "tableau" ? 'data-card-destination="tableau"' : ""} ${source.column != null ? `data-column="${source.column}"` : ""} ${source.index != null ? `data-index="${source.index}"` : ""} ${source.pile != null ? `data-pile="${source.pile}"` : ""}` : "";
-  if (!face) return `<div class="playing-card card-back" aria-label="Face-down card"><span>NL</span></div>`;
+  const revealClass = data.progression.cardEffect !== "none" ? ` card-reveal effect-${escapeHtml(data.progression.cardEffect)}` : "";
+  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" : "";
+  const backClass = `card-back-${escapeHtml(data.progression.cardBack)}`;
+  const sourceAttributes = source ? `data-card-source="${source.zone}" draggable="${face ? "true" : "false"}" ${["tableau", "foundation", "cell"].includes(source.zone) ? `data-card-destination="${source.zone}"` : ""} ${source.column != null ? `data-column="${source.column}"` : ""} ${source.index != null ? `data-index="${source.index}"` : ""} ${source.pile != null ? `data-pile="${source.pile}"` : ""}` : "";
+  if (!face) return `<div class="playing-card card-back ${backClass}" aria-label="Face-down card"><span>NL</span></div>`;
   const label = `${cardRankLabel(card.rank)} of ${card.suit}`;
-  return `<button type="button" class="playing-card ${color} ${selected ? "selected" : ""}" ${sourceAttributes} aria-label="${label}"><span class="card-corner">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span><span class="card-center">${cardSuitSymbol(card.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span></button>`;
+  const tag = source ? "button" : "div";
+  const role = source ? "" : 'role="img"';
+  return `<${tag} ${source ? 'type="button"' : ""} class="playing-card ${color}${deckClass}${revealClass} ${selected ? "selected" : ""}" ${sourceAttributes} ${role} aria-label="${label}"><span class="card-corner">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span><span class="card-center">${cardSuitSymbol(card.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span></${tag}>`;
 }
 
 function renderSolitaire() {
@@ -976,7 +1048,7 @@ function renderSolitaire() {
   const foundations = game.foundations.map((pile, index) => {
     const top = pile.cards[pile.cards.length - 1];
     return `<div class="solitaire-slot">${top
-      ? `<button type="button" class="playing-card ${NovexCardGames.redSuits.includes(pile.suit) ? "red" : "black"} ${selectedIs("foundation", index) ? "selected" : ""}" data-card-source="foundation" data-pile="${index}" data-card-destination="foundation" aria-label="Foundation ${pile.suit}, top card ${cardRankLabel(top.rank)}"><span class="card-corner">${cardRankLabel(top.rank)}<i>${cardSuitSymbol(pile.suit)}</i></span><span class="card-center">${cardSuitSymbol(pile.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(top.rank)}<i>${cardSuitSymbol(pile.suit)}</i></span></button>`
+      ? cardSlot(top, { zone: "foundation", pile: index }, selectedIs("foundation", index))
       : `<button type="button" class="solitaire-empty foundation-empty" data-card-destination="foundation" data-pile="${index}" aria-label="Empty ${pile.suit} foundation">${cardSuitSymbol(pile.suit)}</button>`}</div>`;
   }).join("");
   const waste = game.waste.length
@@ -989,8 +1061,8 @@ function renderSolitaire() {
     : `<button type="button" class="solitaire-empty tableau-empty" data-card-destination="tableau" data-column="${column}" aria-label="Empty tableau column, move a king here">K</button>`}</div>`).join("");
   return `
     <div class="solitaire-toolbar"><div><span class="section-code">KLONDIKE / DRAW ONE</span><strong>${game.won ? "Deal complete!" : `${game.moves} moves · ${game.stock.length} cards in stock`}</strong></div><div class="solitaire-actions"><button class="button button-outline" type="button" data-action="solitaire-hint">Need a hint?</button><button class="button button-primary" type="button" data-action="new-solitaire">New deal ↻</button></div></div>
-    ${game.won ? `<div class="solitaire-win" role="status">✦ All 52 cards home. You did it!</div>` : ""}
-    <div class="solitaire-scroll"><div class="solitaire-board">
+    ${game.won ? `<div class="solitaire-win victory-celebration" role="status">✦ All 52 cards home. You did it!</div>` : ""}
+    <div class="solitaire-scroll"><div class="solitaire-board" data-table-theme="${escapeHtml(data.progression.tableTheme)}">
       <div class="solitaire-top-row"><div class="solitaire-stock-waste"><button type="button" class="solitaire-empty stock-slot ${game.stock.length ? "stock-ready" : ""}" data-action="solitaire-stock" aria-label="${game.stock.length ? "Draw next card" : "Recycle waste pile"}">${game.stock.length ? `<span>↻</span><small>${game.stock.length}</small>` : game.waste.length ? "↻" : "·"}</button><div class="solitaire-slot">${waste}</div></div><div class="solitaire-foundations">${foundations}</div></div>
       <div class="solitaire-tableau">${columns}</div>
     </div></div>
@@ -998,10 +1070,57 @@ function renderSolitaire() {
   `;
 }
 
+function renderFreecell() {
+  const game = data.games.freecell || (data.games.freecell = NovexCardGames.createFreecellGame());
+  const renderCard = (card, source, selected = false) => solitaireCardMarkup(card, source, selected);
+  const cells = game.cells.map((card, index) => `<div class="solitaire-slot">${card
+    ? renderCard(card, { zone: "cell", index }, game.selected?.zone === "cell" && game.selected.index === index)
+    : `<button type="button" class="solitaire-empty freecell-empty" data-card-destination="cell" data-index="${index}" aria-label="Empty free cell ${index + 1}">+</button>`}</div>`).join("");
+  const foundations = game.foundations.map((pile, index) => {
+    const top = pile.cards[pile.cards.length - 1];
+    return `<div class="solitaire-slot">${top
+      ? renderCard(top, { zone: "foundation", index }, game.selected?.zone === "foundation" && game.selected.index === index)
+      : `<button type="button" class="solitaire-empty foundation-empty" data-card-destination="foundation" data-index="${index}" aria-label="Empty ${pile.suit} foundation">${cardSuitSymbol(pile.suit)}</button>`}</div>`;
+  }).join("");
+  const tableau = game.tableau.map((stack, column) => `<div class="freecell-column" data-card-destination="tableau" data-column="${column}">${stack.length
+    ? stack.map((card, index) => `<div class="tableau-card-wrap" style="--card-offset:${index ? "30px" : "0px"}">${renderCard(card, index === stack.length - 1 ? { zone: "tableau", column } : null, game.selected?.zone === "tableau" && game.selected.column === column && index === stack.length - 1)}</div>`).join("")
+    : `<button type="button" class="solitaire-empty tableau-empty" data-card-destination="tableau" data-column="${column}" aria-label="Empty free-cell column ${column + 1}">+</button>`}</div>`).join("");
+  return `<section class="freecell-panel playing-table" data-table-theme="${escapeHtml(data.progression.tableTheme)}">
+    <div class="solitaire-toolbar"><div><span class="section-code">FREECELL / PLAN YOUR ROUTE</span><strong>${game.won ? "All cards home!" : `${game.moves} moves · four open cells`}</strong></div><div class="solitaire-actions"><button class="button button-primary" type="button" data-action="new-freecell">New deal ↻</button></div></div>
+    ${game.won ? `<div class="solitaire-win victory-celebration" role="status">✦ Perfectly routed. FreeCell won!</div>` : ""}
+    <div class="freecell-board"><div class="freecell-top-row"><div class="freecell-cells">${cells}</div><div class="solitaire-foundations">${foundations}</div></div><div class="freecell-tableau">${tableau}</div></div>
+    <p class="solitaire-footer"><span>♣ ${data.games.freecellWins} wins</span><span>Move one card at a time; build alternating colors down. Any card may enter an empty column.</span><span>Drag or tap a card, then its destination.</span></p>
+  </section>`;
+}
+
+function blackjackCardMarkup(card, hidden = false) {
+  if (hidden) return `<div class="playing-card card-back card-back-${escapeHtml(data.progression.cardBack)}" aria-label="Dealer's hidden card"><span>NL</span></div>`;
+  const color = NovexCardGames.redSuits.includes(card.suit) ? "red" : "black";
+  const effect = data.progression.cardEffect !== "none" ? ` card-reveal effect-${escapeHtml(data.progression.cardEffect)}` : "";
+  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" : "";
+  return `<div class="playing-card ${color}${deckClass}${effect}" aria-label="${cardRankLabel(card.rank)} of ${card.suit}"><span class="card-corner">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span><span class="card-center">${cardSuitSymbol(card.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span></div>`;
+}
+
+function renderBlackjack() {
+  if (!data.games.blackjack) data.games.blackjack = NovexCardGames.createBlackjackGame(1);
+  const game = data.games.blackjack;
+  const score = (hand) => NovexCardGames.blackjackScore(hand);
+  const handMarkup = (hand, hideSecond = false) => `<div class="blackjack-hand">${hand.map((card, index) => blackjackCardMarkup(card, hideSecond && index === 1)).join("")}</div>`;
+  return `<section class="blackjack-panel playing-table" data-table-theme="${escapeHtml(data.progression.tableTheme)}">
+    <div class="solitaire-toolbar"><div><span class="section-code">BLACKJACK / NO BETS, JUST CARDS</span><strong>${game.status === "settled" ? escapeHtml(game.result) : "Get closest to 21 without going over."}</strong></div><div class="solitaire-actions"><label class="bot-picker"><span>BOTS</span><select id="blackjack-bot-count" aria-label="Number of bots">${Array.from({ length: 6 }, (_, index) => `<option value="${index + 1}" ${game.botCount === index + 1 ? "selected" : ""}>${index + 1}</option>`).join("")}</select></label><button class="button button-primary" type="button" data-action="new-blackjack">New hand ↻</button></div></div>
+    <div class="blackjack-table">
+      <article class="blackjack-seat dealer-seat"><span class="section-code">DEALER · ${game.status === "settled" ? score(game.dealer.hand) : "?"}</span>${handMarkup(game.dealer.hand, game.status === "playing")}</article>
+      <div class="blackjack-seats">${game.players.map((player) => `<article class="blackjack-seat ${player.human ? "human-seat" : "bot-seat"} ${player.result === "win" ? "seat-winner" : ""}"><span class="section-code">${escapeHtml(player.name.toUpperCase())}${player.result ? ` · ${escapeHtml(player.result.toUpperCase())}` : ""}</span>${handMarkup(player.hand)}<strong>${score(player.hand)}</strong></article>`).join("")}</div>
+    </div>
+    ${game.status === "playing" ? `<div class="blackjack-actions"><button class="button button-primary" type="button" data-action="blackjack-hit">Hit</button><button class="button button-outline" type="button" data-action="blackjack-stand">Stand</button></div>` : `<div class="solitaire-win ${game.players[0].result === "win" ? "victory-celebration" : ""}" role="status">${game.players[0].result === "win" ? "✦" : "♠"} ${escapeHtml(game.result)}</div>`}
+    <p class="solitaire-footer"><span>♣ ${data.games.blackjackWins} wins</span><span>${data.games.blackjackGames} hands completed · ${data.games.botGames} bot games</span><span>Dealer stands on 17. Aces count as 1 or 11.</span></p>
+  </section>`;
+}
+
 function supabaseSetupMessage() {
   const config = window.NOVEX_SUPABASE_CONFIG;
   if (!window.supabase?.createClient) return "The Supabase client could not load. Check your internet connection and reload.";
-  if (!config?.url || !config?.anonKey) return "Online rooms need your Supabase project URL and public anon key in supabase-config.js. Solitaire and budgeting work without them.";
+  if (!config?.url || !config?.anonKey) return "Online features need your Supabase project URL and public anon key in supabase-config.js. Solo card games and budgeting work without them.";
   return "";
 }
 
@@ -1050,7 +1169,7 @@ async function fetchGoFishRoom(roomId) {
   if (roomResult.data.status === "finished" && !data.games.completedRoomIds.includes(roomId)) {
     data.games.completedRoomIds.push(roomId);
     data.games.goFishGames += 1;
-    if (roomResult.data.winner_id === user.id) data.games.goFishWins += 1;
+    recordCardGameResult("gofish", roomResult.data.winner_id === user.id);
     data.games = NovexCardGames.normalizeGameStats(data.games);
     persist();
   }
@@ -1195,17 +1314,26 @@ function renderGoFish() {
 }
 
 function renderGames() {
-  const game = data.games.solitaire || NovexCardGames.createSolitaireGame();
-  if (!data.games.solitaire) {
-    data.games.solitaire = game;
-    persist();
-  }
+  if (!data.games.solitaire) data.games.solitaire = NovexCardGames.createSolitaireGame();
   viewRoot.innerHTML = `
     <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> NEON CARD TABLE / PLAY SOLO OR TOGETHER</div><h1>Shuffle up <span>some fun.</span></h1><p class="lead">Take a quiet round of solitaire or invite friends to a live table. No bets, no buy-ins, just cards.</p></div><div class="games-sparkle">♠ <span>♥</span> ♦ <span>♣</span></div></section>
-    <div class="games-tabs" role="tablist" aria-label="Card game type"><button type="button" role="tab" aria-selected="${gamesTab === "solitaire"}" class="${gamesTab === "solitaire" ? "active" : ""}" data-games-tab="solitaire">♠ Solitaire <small>SOLO</small></button><button type="button" role="tab" aria-selected="${gamesTab === "friends"}" class="${gamesTab === "friends" ? "active" : ""}" data-games-tab="friends">♥ Play with friends <small>ONLINE</small></button></div>
-    ${gamesTab === "solitaire" ? `<section class="solitaire-panel panel">${renderSolitaire()}</section>` : renderGoFish()}
-    <div class="games-footnote"><span>✧</span> ${data.games.solitaireWins} solitaire ${data.games.solitaireWins === 1 ? "win" : "wins"} · ${data.games.goFishGames} online ${data.games.goFishGames === 1 ? "game" : "games"} played</div>
+    <div class="games-tabs" role="tablist" aria-label="Card game type">
+      <button type="button" role="tab" aria-selected="${gamesTab === "solitaire"}" class="${gamesTab === "solitaire" ? "active" : ""}" data-games-tab="solitaire">♠ Solitaire <small>SOLO</small></button>
+      <button type="button" role="tab" aria-selected="${gamesTab === "freecell"}" class="${gamesTab === "freecell" ? "active" : ""}" data-games-tab="freecell">♣ FreeCell <small>SOLO</small></button>
+      <button type="button" role="tab" aria-selected="${gamesTab === "blackjack"}" class="${gamesTab === "blackjack" ? "active" : ""}" data-games-tab="blackjack">♦ Blackjack <small>BOTS</small></button>
+      <button type="button" role="tab" aria-selected="${gamesTab === "community"}" class="${gamesTab === "community" ? "active" : ""}" data-games-tab="community">✦ Leaderboard <small>EVENTS</small></button>
+      <button type="button" role="tab" aria-selected="${gamesTab === "friends"}" class="${gamesTab === "friends" ? "active" : ""}" data-games-tab="friends">♥ Go Fish <small>FRIENDS</small></button>
+    </div>
+    ${gamesTab === "solitaire" ? `<section class="solitaire-panel panel">${renderSolitaire()}</section>`
+      : gamesTab === "freecell" ? renderFreecell()
+        : gamesTab === "blackjack" ? renderBlackjack()
+          : gamesTab === "community" ? renderCardClub()
+            : renderGoFish()}
+    <div class="games-footnote"><span>✧</span> ${data.games.totalGamesPlayed} games played · ${data.games.highestWinStreak} best win streak · ${data.games.goFishGames} online Go Fish rounds</div>
   `;
+  if (gamesTab === "community" && !supabaseSetupMessage() && !cardClubState.loading && !cardClubState.loaded) {
+    void loadCardClub();
+  }
   if (gamesTab === "friends" && !multiplayerState.room && !multiplayerState.loading && !supabaseSetupMessage()) {
     const savedRoomId = localStorage.getItem("novex-gofish-room-id");
     if (savedRoomId) {
@@ -1217,6 +1345,100 @@ function renderGames() {
         multiplayerState.loading = false;
         if (activeView === "games" && gamesTab === "friends") renderGames();
       });
+    }
+  }
+
+  function renderCardClub() {
+    const setupMessage = supabaseSetupMessage();
+    if (setupMessage) return `<section class="card-club panel"><div class="section-code">CARD CLUB / ONLINE RANKINGS</div><h2>Play, place, repeat.</h2><p>${escapeHtml(setupMessage)}</p><p class="friend-privacy-note">Online leaderboards and tournaments are optional. Local games work without Supabase.</p></section>`;
+    const active = cardClubState.activeTournamentId;
+    return `<section class="card-club">
+      <div class="panel club-intro"><div><span class="section-code">COMMUNITY / PLAYER-REPORTED SCORES</span><h2>Friendly competition.</h2><p>Join the public card leaderboard, enter a casual tournament, and invite friends to beat your best. Game results are self-reported because the games run in your browser.</p></div>${cardClubState.joined ? `<span class="status-pill">LEADERBOARD JOINED</span>` : `<button class="button button-primary" type="button" data-action="join-card-leaderboard">Join leaderboard</button>`}</div>
+      ${cardClubState.error ? `<div class="multiplayer-notice error" role="alert">${escapeHtml(cardClubState.error)}</div>` : ""}
+      <div class="club-grid"><section class="panel"><div class="section-heading"><div><span class="section-code">ALL-TIME / OPT-IN</span><h2>Leaderboard</h2></div><button type="button" class="text-button" data-action="refresh-card-club">Refresh ↻</button></div>${cardClubState.loading ? `<p class="panel-copy">Loading the card club…</p>` : cardClubState.leaderboard.length ? `<ol class="leaderboard-list">${cardClubState.leaderboard.map((entry, index) => `<li><span class="leaderboard-rank">${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(entry.display_name)}</strong><small>${entry.total_wins} wins · ${entry.total_games} games</small><b>${entry.best_streak}🔥</b></li>`).join("")}</ol>` : `<p class="empty-note">Be the first to join the public leaderboard.</p>`}</section>
+      <section class="panel"><div class="section-heading"><div><span class="section-code">LIVE + UPCOMING</span><h2>Casual tournaments</h2></div></div><form id="create-tournament-form" class="tournament-create"><input name="name" maxlength="48" placeholder="Name your tournament" required><select name="gameType" aria-label="Tournament game"><option value="solitaire">Solitaire</option><option value="freecell">FreeCell</option><option value="blackjack">Blackjack</option></select><button class="button button-quiet" type="submit" ${!cardClubState.joined ? "disabled" : ""}>Create 24h event</button></form>${cardClubState.tournaments.length ? `<div class="tournament-list">${cardClubState.tournaments.map((event) => {
+      const joined = cardClubState.joinedTournamentIds.includes(event.id);
+      const isActive = active === event.id;
+      return `<article class="tournament-card ${isActive ? "tournament-active" : ""}"><div><span class="section-code">${escapeHtml(event.game_type.toUpperCase())} · ${joined ? "JOINED" : "OPEN"}</span><h3>${escapeHtml(event.name)}</h3><p>${new Date(event.starts_at).toLocaleString()} – ${new Date(event.ends_at).toLocaleString()}</p><small>${event.participant_count} players · ${event.total_games} rounds reported</small>${isActive ? `<ol class="tournament-standings">${cardClubState.standings.map((standing, index) => `<li><span>${index + 1}.</span><strong>${escapeHtml(standing.display_name)}</strong><small>${standing.wins} wins · ${standing.games} games</small></li>`).join("") || "<li>Play a game to appear on the standings.</li>"}</ol>` : ""}</div><button class="button ${joined ? "button-quiet" : "button-outline"}" type="button" data-action="${joined ? "select-tournament" : "join-tournament"}" data-tournament-id="${escapeHtml(event.id)}" ${!cardClubState.joined ? "disabled" : ""}>${isActive ? "ACTIVE" : joined ? "Set active" : "Join"}</button></article>`;
+    }).join("")}</div>` : `<p class="empty-note">${cardClubState.loading ? "Loading events…" : "No live events yet. Create one and invite friends to join."}</p>`}</section></div>
+      <p class="friend-privacy-note">Joining shares only the display name you choose and your card-game totals. Your learning profile, budget, email, and password are never shared.</p>
+    </section>`;
+  }
+
+  async function loadCardClub() {
+    const requestId = ++cardClubRequest;
+    cardClubState.loading = true;
+    cardClubState.error = "";
+    if (activeView === "games" && gamesTab === "community") renderGames();
+    try {
+      const client = getSupabaseClient();
+      const user = await ensureGameUser();
+      const [leaderboardResult, tournamentsResult, statusResult] = await Promise.all([
+        client.from("card_leaderboard").select("display_name,total_wins,total_games,best_streak,updated_at").order("total_wins", { ascending: false }).order("best_streak", { ascending: false }).limit(50),
+        client.from("card_tournaments").select("id,name,game_type,starts_at,ends_at,participant_count,total_games").gt("ends_at", new Date().toISOString()).order("starts_at", { ascending: true }).limit(25),
+        client.rpc("get_my_card_club_status"),
+      ]);
+      if (leaderboardResult.error) throw leaderboardResult.error;
+      if (tournamentsResult.error) throw tournamentsResult.error;
+      if (statusResult.error) throw statusResult.error;
+      if (requestId !== cardClubRequest) return;
+      const status = statusResult.data || {};
+      cardClubState.leaderboard = leaderboardResult.data || [];
+      cardClubState.tournaments = tournamentsResult.data || [];
+      cardClubState.joined = Boolean(status.joined);
+      cardClubState.joinedTournamentIds = Array.isArray(status.tournament_ids) ? status.tournament_ids : [];
+      if (!cardClubState.joinedTournamentIds.includes(cardClubState.activeTournamentId)) {
+        cardClubState.activeTournamentId = cardClubState.joinedTournamentIds[0] || "";
+      }
+      if (cardClubState.activeTournamentId) {
+        const standingsResult = await client.rpc("get_card_tournament_standings", {
+          p_tournament_id: cardClubState.activeTournamentId,
+        });
+        if (standingsResult.error) throw standingsResult.error;
+        if (requestId !== cardClubRequest) return;
+        cardClubState.standings = standingsResult.data || [];
+      } else cardClubState.standings = [];
+      cardClubState.loaded = true;
+    } catch (error) {
+      console.error("Could not load the card club.", error);
+      if (requestId === cardClubRequest) cardClubState.error = error.message || "Could not load the online card club.";
+    } finally {
+      if (requestId === cardClubRequest) {
+        cardClubState.loaded = true;
+        cardClubState.loading = false;
+        if (activeView === "games" && gamesTab === "community") renderGames();
+      }
+    }
+  }
+
+  async function cardClubAction(action, tournamentId = "", formValues = {}) {
+    try {
+      const client = getSupabaseClient();
+      await ensureGameUser();
+      let result;
+      if (action === "join") {
+        result = await client.rpc("join_card_leaderboard", {
+          p_display_name: data.progression.profile.displayName || currentAccount?.username || "Card Player",
+        });
+      } else if (action === "join-tournament") {
+        result = await client.rpc("join_card_tournament", { p_tournament_id: tournamentId });
+        cardClubState.activeTournamentId = tournamentId;
+      } else if (action === "create-tournament") {
+        result = await client.rpc("create_card_tournament", {
+          p_name: formValues.name,
+          p_game_type: formValues.gameType,
+        });
+        cardClubState.activeTournamentId = result.data;
+      }
+      if (result?.error) throw result.error;
+      cardClubState.loaded = false;
+      await loadCardClub();
+      showToast(action === "join" ? "YOU'RE ON THE CARD LEADERBOARD" : action === "create-tournament" ? "TOURNAMENT CREATED" : "YOU JOINED THE TOURNAMENT");
+    } catch (error) {
+      console.error("Card club action failed.", error);
+      cardClubState.error = error.message || "That card club action did not work.";
+      if (activeView === "games" && gamesTab === "community") renderGames();
+      else showToast(cardClubState.error, true);
     }
   }
 }
@@ -1236,16 +1458,41 @@ function renderShop() {
     <div class="shop-note"><span>◇</span><p>Every item uses in-app credits only. No paid currency, random crates, or surprise odds.</p></div>
     <section class="shop-grid">${items.map((item) => {
       const owned = data.progression.owned.includes(item.id);
-      const equipped = (item.type === "theme" && data.progression.equippedTheme === item.value) ||
-        (item.type === "frame" && data.progression.profile.frame === item.value) ||
-        (item.type === "title" && data.progression.profile.title === item.value);
+      const equipped = shopItemEquipped(item);
       const canAfford = data.progression.credits >= item.price;
       const action = item.type === "freeze"
         ? `BUY SHIELD · ◈ ${item.price} (${data.progression.freezeCount} owned)`
         : equipped ? "EQUIPPED" : owned ? "EQUIP ITEM" : `◈ ${item.price}`;
       const isDisabled = item.type === "freeze" ? !canAfford : equipped || (!owned && !canAfford);
-      return `<article class="shop-item ${owned ? "item-owned" : ""}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><div class="shop-preview preview-${escapeHtml(item.value)}">${item.type === "theme" ? "NV" : item.type === "frame" ? "⌬" : item.type === "freeze" ? "♨" : "✦"}</div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description)}</p><button class="button ${owned ? "button-quiet" : "button-primary"} shop-buy" data-shop-item="${item.id}" ${isDisabled ? "disabled" : ""}>${action}</button></article>`;
+      const icon = item.type === "avatar" ? item.value : item.type === "cardBack" || item.type === "cardDeck" ? "🂠" : item.type === "cardEffect" ? "✧" : item.type === "tableTheme" ? "♣" : item.type === "banner" ? "▰" : item.type === "theme" ? "NV" : item.type === "frame" ? "⌬" : item.type === "freeze" ? "♨" : "✦";
+      return `<article class="shop-item ${owned ? "item-owned" : ""} ${item.rarity === "LEGENDARY" ? "item-legendary" : ""}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><div class="shop-preview preview-${escapeHtml(item.value)}">${escapeHtml(icon)}</div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description)}</p><button class="button ${owned ? "button-quiet" : "button-primary"} shop-buy" data-shop-item="${item.id}" ${isDisabled ? "disabled" : ""}>${action}</button></article>`;
     }).join("")}</section>`;
+}
+
+function shopItemEquipped(item) {
+  const progression = data.progression;
+  return (item.type === "theme" && progression.equippedTheme === item.value) ||
+    (item.type === "frame" && progression.profile.frame === item.value) ||
+    (item.type === "title" && progression.profile.title === item.value) ||
+    (item.type === "cardBack" && progression.cardBack === item.value) ||
+    (item.type === "cardEffect" && progression.cardEffect === item.value) ||
+    (item.type === "tableTheme" && progression.tableTheme === item.value) ||
+    (item.type === "banner" && progression.profile.banner === item.value) ||
+    (item.type === "avatar" && progression.profile.avatar === item.value) ||
+    (item.type === "cardDeck" && progression.profile.favoriteDeck === item.value);
+}
+
+function equipShopItem(item) {
+  const progression = data.progression;
+  if (item.type === "theme") progression.equippedTheme = item.value;
+  else if (item.type === "frame") progression.profile.frame = item.value;
+  else if (item.type === "title") progression.profile.title = item.value;
+  else if (item.type === "cardBack") progression.cardBack = item.value;
+  else if (item.type === "cardEffect") progression.cardEffect = item.value;
+  else if (item.type === "tableTheme") progression.tableTheme = item.value;
+  else if (item.type === "banner") progression.profile.banner = item.value;
+  else if (item.type === "avatar") progression.profile.avatar = item.value;
+  else if (item.type === "cardDeck") progression.profile.favoriteDeck = item.value;
 }
 
 function handleShopPurchase(itemId) {
@@ -1259,23 +1506,105 @@ function handleShopPurchase(itemId) {
     progression.freezeCount += 1;
     showToast("STREAK SHIELD ACQUIRED · ready when you need it");
   } else if (owned) {
-    if (item.type === "theme") progression.equippedTheme = item.value;
-    if (item.type === "frame") progression.profile.frame = item.value;
-    if (item.type === "title") progression.profile.title = item.value;
+    equipShopItem(item);
     showToast(`${item.name.toUpperCase()} EQUIPPED`);
   } else {
     if (progression.credits < item.price) return showToast("Not enough credits for this item.", true);
     progression.credits -= item.price;
     progression.owned.push(item.id);
-    if (item.type === "theme") progression.equippedTheme = item.value;
-    if (item.type === "frame") progression.profile.frame = item.value;
-    if (item.type === "title") progression.profile.title = item.value;
+    equipShopItem(item);
     showToast(`${item.name.toUpperCase()} UNLOCKED · ITEM ADDED TO PROFILE`);
   }
   checkAchievements();
   persist();
   updateHeader();
   renderShop();
+}
+
+function spinDailyWheel() {
+  if (wheelSpinning) return;
+  const games = data.games;
+  const today = todayKey();
+  if (games.dailySpinDate === today) return showToast("TODAY'S WHEEL REWARD IS ALREADY CLAIMED.");
+  let ticket = Math.random() * DAILY_WHEEL_PRIZES.reduce((sum, prize) => sum + prize.weight, 0);
+  const prize = DAILY_WHEEL_PRIZES.find((entry) => (ticket -= entry.weight) < 0) || DAILY_WHEEL_PRIZES[0];
+  let reward = prize.label;
+  if (prize.cosmetic) {
+    const rareItems = SHOP_ITEMS.filter((item) =>
+      ["RARE", "EPIC", "LEGENDARY"].includes(item.rarity) &&
+      item.type !== "freeze" && item.type !== "theme" &&
+      !gamesOwnedCosmetic(item)
+    );
+    if (rareItems.length) {
+      const item = rareItems[Math.floor(Math.random() * rareItems.length)];
+      data.progression.owned.push(item.id);
+      reward = `Rare ${item.rarity.toLowerCase()} cosmetic: ${item.name}`;
+    } else {
+      data.progression.credits += 120;
+      reward = "120 credits (all rare cosmetics collected)";
+    }
+  } else data.progression.credits += prize.credits;
+  games.dailySpinDate = today;
+  games.dailySpinReward = reward;
+  wheelSpinning = true;
+  persist();
+  updateHeader();
+  renderProfile();
+  window.setTimeout(() => {
+    wheelSpinning = false;
+    if (activeView === "profile") renderProfile();
+    showToast(`DAILY DROP · ${reward.toUpperCase()}`);
+  }, 2400);
+}
+
+function gamesOwnedCosmetic(item) {
+  return data.progression.owned.includes(item.id);
+}
+
+function recordCardGameResult(gameType, won) {
+  const games = data.games;
+  games.totalGamesPlayed += 1;
+  if (won) {
+    games.currentWinStreak += 1;
+    games.highestWinStreak = Math.max(games.highestWinStreak, games.currentWinStreak);
+    if (gameType === "solitaire") games.solitaireWins += 1;
+    if (gameType === "freecell") games.freecellWins += 1;
+    if (gameType === "blackjack") games.blackjackWins += 1;
+    if (gameType === "gofish") games.goFishWins += 1;
+  } else games.currentWinStreak = 0;
+  persist();
+  if (cardClubState.joined && !supabaseSetupMessage()) void submitCardClubResult(gameType, won);
+}
+
+async function submitCardClubResult(gameType, won) {
+  try {
+    const client = getSupabaseClient();
+    await ensureGameUser();
+    const calls = [client.rpc("record_card_game_result", { p_game_type: gameType, p_won: won })];
+    const activeTournament = cardClubState.tournaments.find((event) =>
+      event.id === cardClubState.activeTournamentId && event.game_type === gameType
+    );
+    if (activeTournament) {
+      calls.push(client.rpc("record_card_tournament_result", {
+        p_tournament_id: activeTournament.id,
+        p_won: won,
+      }));
+    }
+    const results = await Promise.all(calls);
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+  } catch (error) {
+    console.error("Could not submit the card game result.", error);
+    showToast("Your local result was saved, but the online score could not sync.", true);
+  }
+}
+
+function settleBlackjackGame() {
+  const game = data.games.blackjack;
+  data.games.blackjackGames += 1;
+  if (game.botCount > 0) data.games.botGames += 1;
+  recordCardGameResult("blackjack", game.players[0].result === "win");
+  if (game.players[0].result === "win") showToast("BLACKJACK · YOU BEAT THE DEALER!");
 }
 
 function investSkill(skill) {
@@ -1333,11 +1662,20 @@ function renderProfile() {
   const progression = data.progression;
   const level = currentLevel();
   const streak = progression.streak;
+  const owned = new Set(progression.owned);
+  const availableAvatars = AVATAR_OPTIONS.filter((avatar, index) => index < 8 ||
+    SHOP_ITEMS.some((item) => item.type === "avatar" && item.value === avatar && owned.has(item.id)));
+  const collection = SHOP_ITEMS.filter((item) => owned.has(item.id) && item.type !== "freeze");
+  const showcase = progression.profile.showcase;
+  const spinAvailable = data.games.dailySpinDate !== todayKey();
   viewRoot.innerHTML = `
     <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> OPERATOR ID / ${escapeHtml(currentAccount?.username || "")}</div><h1>Your personal <span>signal.</span></h1><p class="lead">Shape your profile, track your evolution, and spend skill points on your learning style.</p></div><button class="button button-quiet" data-nav="shop">Visit neon market →</button></section>
-    <section class="profile-hero ${streakClass()}"><div class="profile-avatar profile-avatar-large">${escapeHtml(progression.profile.avatar || "⌬")}</div><div class="profile-identity"><span class="section-code">LEVEL ${level} OPERATOR</span><h2>${escapeHtml(progression.profile.displayName || currentAccount?.username || "Operator")}</h2><p>${escapeHtml(progression.profile.title || titleForLevel(level))}</p><div class="profile-xp-track"><i style="width:${Math.round(levelProgress() / 150 * 100)}%"></i></div><small>${progression.xp} XP TOTAL</small></div><div class="profile-streak"><span>♨</span><strong>${streak}</strong><small>DAY STREAK</small><em>RECORD ${progression.bestStreak}</em></div></section>
-    <div class="profile-grid"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">OPERATOR CUSTOMIZATION</span><h2>Edit profile</h2></div></div><form id="profile-form" class="profile-form"><label class="setting-field"><span>DISPLAY NAME</span><input name="displayName" maxlength="28" value="${escapeHtml(progression.profile.displayName || "")}" placeholder="${escapeHtml(currentAccount?.username || "Operator")}"></label><label class="setting-field"><span>AVATAR SYMBOL</span><select name="avatar">${["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍"].map((avatar) => `<option ${progression.profile.avatar === avatar ? "selected" : ""}>${avatar}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE TITLE</span><select name="title"><option value="">${escapeHtml(titleForLevel(level))} (default)</option>${SHOP_ITEMS.filter((item) => item.type === "title" && progression.owned.includes(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.title === item.value ? "selected" : ""}>${escapeHtml(item.value)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE FRAME</span><select name="frame"><option value="">Default frame</option>${SHOP_ITEMS.filter((item) => item.type === "frame" && progression.owned.includes(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.frame === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="button button-primary" type="submit">SAVE PROFILE →</button></form></section>
+    <section class="profile-hero ${streakClass()} banner-${escapeHtml(progression.profile.banner)}"><div class="profile-avatar profile-avatar-large">${escapeHtml(progression.profile.avatar || "⌬")}</div><div class="profile-identity"><span class="section-code">LEVEL ${level} OPERATOR</span><h2>${escapeHtml(progression.profile.displayName || currentAccount?.username || "Operator")}</h2><p>${escapeHtml(progression.profile.title || titleForLevel(level))}</p><div class="profile-xp-track"><i style="width:${Math.round(levelProgress() / 150 * 100)}%"></i></div><small>${progression.xp} XP TOTAL · FAVORITE: ${escapeHtml(FAVORITE_GAMES.find(([id]) => id === progression.profile.favoriteGame)?.[1] || "Klondike Solitaire")}</small></div><div class="profile-streak"><span>♨</span><strong>${streak}</strong><small>DAY STREAK</small><em>RECORD ${progression.bestStreak}</em></div></section>
+    <section class="profile-stats"><article><strong>${data.games.totalGamesPlayed}</strong><span>GAMES PLAYED</span></article><article><strong>${data.games.highestWinStreak}</strong><span>BEST WIN STREAK</span></article><article><strong>${data.games.solitaireWins + data.games.freecellWins + data.games.blackjackWins + data.games.goFishWins}</strong><span>GAMES WON</span></article><article><strong>${collection.length}</strong><span>COSMETICS OWNED</span></article></section>
+    <div class="profile-grid"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">OPERATOR CUSTOMIZATION</span><h2>Edit profile</h2></div></div><form id="profile-form" class="profile-form"><label class="setting-field"><span>DISPLAY NAME</span><input name="displayName" maxlength="28" value="${escapeHtml(progression.profile.displayName || "")}" placeholder="${escapeHtml(currentAccount?.username || "Operator")}"></label><label class="setting-field"><span>AVATAR</span><select name="avatar">${availableAvatars.map((avatar) => `<option value="${escapeHtml(avatar)}" ${progression.profile.avatar === avatar ? "selected" : ""}>${escapeHtml(avatar)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE TITLE</span><select name="title"><option value="">${escapeHtml(titleForLevel(level))} (default)</option>${SHOP_ITEMS.filter((item) => item.type === "title" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.title === item.value ? "selected" : ""}>${escapeHtml(item.value)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE FRAME</span><select name="frame"><option value="">Default frame</option>${SHOP_ITEMS.filter((item) => item.type === "frame" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.frame === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE BANNER</span><select name="banner"><option value="default">Default banner</option>${SHOP_ITEMS.filter((item) => item.type === "banner" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.banner === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="setting-field"><span>FAVORITE GAME</span><select name="favoriteGame">${FAVORITE_GAMES.map(([id, name]) => `<option value="${id}" ${progression.profile.favoriteGame === id ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label><label class="setting-field"><span>FAVORITE CARD DECK</span><select name="favoriteDeck"><option value="classic">Classic</option>${SHOP_ITEMS.filter((item) => item.type === "cardDeck" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.favoriteDeck === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="button button-primary" type="submit">SAVE PROFILE →</button></form></section>
     <section class="panel skill-panel"><div class="section-heading"><div><span class="section-code">NEURAL SKILL TREE</span><h2>Invest points</h2></div><span class="skill-points">${progression.skillPoints} SP</span></div><p class="skill-copy">Earn one point per level. Each path has five permanent learning bonuses.</p><div class="skill-list">${Object.entries({ memory: ["MEMORY", "+2 seconds to Memory Rush per node"], focus: ["FOCUS", "+1 minute to timed tests per node"], speed: ["SPEED", "+5 seconds and +3 XP in Speed Run per node"], intelligence: ["INTELLIGENCE", "+2 XP per correct answer per node"] }).map(([key, [label, benefit]]) => `<div class="skill-row"><div><strong>${label}</strong><small>${progression.skills[key]} / 5 nodes · ${benefit}</small></div><button class="skill-node" data-skill="${key}" ${progression.skillPoints <= 0 || progression.skills[key] >= 5 ? "disabled" : ""}>＋</button></div>`).join("")}</div></section>
+    <section class="panel daily-wheel-panel"><div class="section-heading"><div><span class="section-code">DAILY DROP / FREE ONCE A DAY</span><h2>Spin the wheel</h2></div><span class="rarity rarity-legendary">RARE PRIZES</span></div><div class="wheel-layout"><div class="daily-wheel ${wheelSpinning ? "spinning" : ""}"><span>25</span><span>40</span><span>60</span><span>100</span><span>✦</span><i>◈</i></div><div class="wheel-copy">${data.games.dailySpinDate === todayKey() ? `<strong>Today's drop: ${escapeHtml(data.games.dailySpinReward || "Reward claimed")}</strong><p>Come back tomorrow for another free spin.</p>` : `<strong>A little luck, once a day.</strong><p>35% · 25 credits · 25% · 40 credits · 20% · 60 credits · 12% · 100 credits · 8% · rare cosmetic.</p>`}<button class="button button-primary" type="button" data-action="spin-daily-wheel" ${!spinAvailable || wheelSpinning ? "disabled" : ""}>${wheelSpinning ? "Spinning…" : spinAvailable ? "Spin for today's reward →" : "Already claimed today"}</button></div></div></section>
+    <section class="panel collection-panel"><div class="section-heading"><div><span class="section-code">YOUR COLLECTION / ${collection.length} ITEMS</span><h2>Showcase</h2></div><small>Choose up to 4 favorites</small></div><div class="collection-showcase">${showcase.length ? showcase.map((id) => collection.find((item) => item.id === id)).filter(Boolean).map((item) => `<span class="collection-chip rarity-${item.rarity.toLowerCase()}">${escapeHtml(item.name)}</span>`).join("") : `<span class="empty-note">Pick a few owned pieces to show off on your profile.</span>`}</div><div class="collection-items">${collection.map((item) => `<button type="button" class="collection-item ${showcase.includes(item.id) ? "in-showcase" : ""}" data-showcase-item="${item.id}" aria-pressed="${showcase.includes(item.id)}" title="${escapeHtml(item.description)}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><strong>${escapeHtml(item.name)}</strong><small>${showcase.includes(item.id) ? "SHOWCASED · click to remove" : "Click to showcase"}</small></button>`).join("") || `<span class="empty-note">Visit the market to collect your first cosmetic.</span>`}</div></section>
     <section class="panel trophy-panel"><div class="section-heading"><div><span class="section-code">TROPHY ROOM</span><h2>Unlocked achievements</h2></div><button class="text-button" data-nav="arcade">All achievements ↗</button></div>${achievementGrid()}</section></div>`;
 }
 
@@ -1495,13 +1833,7 @@ function downloadBackup() {
     history: data.history,
     progression: data.progression,
     budget: data.budget,
-    games: {
-      solitaireWins: data.games.solitaireWins,
-      solitaireMoves: data.games.solitaireMoves,
-      goFishWins: data.games.goFishWins,
-      goFishGames: data.games.goFishGames,
-      solitaire: data.games.solitaire,
-    },
+    games: data.games,
     settings,
     testOptions,
   }, null, 2)], { type: "text/plain;charset=utf-8" });
@@ -1597,23 +1929,9 @@ function validateBackup(value) {
       }),
     };
   });
-  const progression = normalizeProgression(value.progression);
+  const progression = validateProgressionCosmetics(normalizeProgression(value.progression));
   const budget = NovexBudget.normalizeBudget(value.budget);
   const games = NovexCardGames.normalizeGameStats(value.games);
-  const validThemes = new Set(["default", ...SHOP_ITEMS.filter((item) => item.type === "theme").map((item) => item.value)]);
-  if (!validThemes.has(progression.equippedTheme) || !progression.owned.includes(`theme-${progression.equippedTheme}`)) progression.equippedTheme = "default";
-  progression.owned = progression.owned.filter((id) =>
-    id === "theme-default" || SHOP_ITEMS.some((item) => item.id === id)
-  );
-  const ownedItems = new Set(progression.owned);
-  if (!ownedItems.has(`theme-${progression.equippedTheme}`)) progression.equippedTheme = "default";
-  if (!ownedItems.has(`frame-${progression.profile.frame}`)) progression.profile.frame = "";
-  const titleItem = SHOP_ITEMS.find((item) => item.type === "title" && item.value === progression.profile.title);
-  if (progression.profile.title && (!titleItem || !ownedItems.has(titleItem.id))) progression.profile.title = "";
-  progression.profile.displayName = typeof progression.profile.displayName === "string" ? progression.profile.displayName.slice(0, 28) : "";
-  progression.profile.title = typeof progression.profile.title === "string" ? progression.profile.title.slice(0, 40) : "";
-  progression.profile.avatar = ["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍"].includes(progression.profile.avatar) ? progression.profile.avatar : "⌬";
-  progression.profile.frame = ["", "orbit", "glitch"].includes(progression.profile.frame) ? progression.profile.frame : "";
   return {
     decks,
     history,
@@ -2383,7 +2701,7 @@ function saveSolitaireMove(previouslyWon = false) {
   const game = data.games.solitaire;
   data.games.solitaireMoves += 1;
   if (!previouslyWon && game.won) {
-    data.games.solitaireWins += 1;
+    recordCardGameResult("solitaire", true);
     showToast("ALL 52 HOME · SOLITAIRE WON!");
   }
   persist();
@@ -2420,6 +2738,109 @@ function handleSolitaireBoardClick(event) {
   }
 }
 
+function freecellSourceFromElement(element) {
+  const zone = element.dataset.cardSource;
+  return {
+    zone,
+    column: element.dataset.column == null ? undefined : Number(element.dataset.column),
+    index: element.dataset.index == null ? undefined : Number(element.dataset.index),
+  };
+}
+
+function handleFreecellBoardClick(event) {
+  const game = data.games.freecell;
+  const sourceElement = event.target.closest("[data-card-source]");
+  const destinationElement = event.target.closest("[data-card-destination]");
+  if (!sourceElement && !destinationElement) return;
+  const selected = game.selected;
+  if (selected && destinationElement) {
+    const destination = {
+      zone: destinationElement.dataset.cardDestination,
+      column: destinationElement.dataset.column == null ? undefined : Number(destinationElement.dataset.column),
+      index: destinationElement.dataset.index == null ? undefined : Number(destinationElement.dataset.index),
+    };
+    const isSameCell = selected.zone === "cell" && destination.zone === "cell" && selected.index === destination.index;
+    const isSameColumn = selected.zone === "tableau" && destination.zone === "tableau" && selected.column === destination.column;
+    if (!isSameCell && !isSameColumn) {
+      const wasWon = game.won;
+      if (NovexCardGames.moveFreecellCard(game, destination)) {
+        if (!wasWon && game.won) recordCardGameResult("freecell", true);
+        persist();
+        return renderGames();
+      }
+    }
+  }
+  if (sourceElement) {
+    const source = freecellSourceFromElement(sourceElement);
+    game.selected = selected && selected.zone === source.zone &&
+      selected.column === source.column && selected.index === source.index ? null : source;
+    persist();
+    renderGames();
+  }
+}
+
+function solitaireDestinationFromElement(element) {
+  return element.dataset.cardDestination === "tableau"
+    ? { zone: "tableau", column: Number(element.dataset.column) }
+    : { zone: "foundation", pile: Number(element.dataset.pile) };
+}
+
+function freecellDestinationFromElement(element) {
+  return {
+    zone: element.dataset.cardDestination,
+    column: element.dataset.column == null ? undefined : Number(element.dataset.column),
+    index: element.dataset.index == null ? undefined : Number(element.dataset.index),
+  };
+}
+
+viewRoot.addEventListener("dragstart", (event) => {
+  const sourceElement = event.target.closest("[data-card-source][draggable='true']");
+  if (!sourceElement || !["solitaire", "freecell"].includes(gamesTab)) return;
+  gamePointerDrag = { game: gamesTab, source: sourceElement };
+  sourceElement.classList.add("is-dragging");
+  event.dataTransfer?.setData("text/plain", "playing-card");
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+});
+
+viewRoot.addEventListener("dragover", (event) => {
+  if (gamePointerDrag && event.target.closest("[data-card-destination]")) event.preventDefault();
+});
+
+viewRoot.addEventListener("drop", (event) => {
+  if (!gamePointerDrag || gamePointerDrag.game !== gamesTab) return;
+  const destinationElement = event.target.closest("[data-card-destination]");
+  if (!destinationElement) return;
+  event.preventDefault();
+  const wasWon = data.games[gamesTab].won;
+  let moved = false;
+  if (gamesTab === "solitaire") {
+    const source = gamePointerDrag.source;
+    data.games.solitaire.selected = {
+      zone: source.dataset.cardSource,
+      column: source.dataset.column == null ? undefined : Number(source.dataset.column),
+      index: source.dataset.index == null ? undefined : Number(source.dataset.index),
+      pile: source.dataset.pile == null ? undefined : Number(source.dataset.pile),
+    };
+    moved = NovexCardGames.moveSelected(data.games.solitaire, solitaireDestinationFromElement(destinationElement));
+  } else {
+    data.games.freecell.selected = freecellSourceFromElement(gamePointerDrag.source);
+    moved = NovexCardGames.moveFreecellCard(data.games.freecell, freecellDestinationFromElement(destinationElement));
+  }
+  gamePointerDrag.source.classList.remove("is-dragging");
+  gamePointerDrag = null;
+  if (moved && gamesTab === "solitaire") saveSolitaireMove(wasWon);
+  else {
+    if (moved && gamesTab === "freecell" && !wasWon && data.games.freecell.won) recordCardGameResult("freecell", true);
+    persist();
+    renderGames();
+  }
+});
+
+viewRoot.addEventListener("dragend", () => {
+  gamePointerDrag?.source?.classList.remove("is-dragging");
+  gamePointerDrag = null;
+});
+
 viewRoot.addEventListener("click", (event) => {
   const nav = event.target.closest("[data-nav]");
   if (nav) return setView(nav.dataset.nav);
@@ -2436,7 +2857,8 @@ viewRoot.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest("[data-card-source], [data-card-destination]")) {
-    handleSolitaireBoardClick(event);
+    if (gamesTab === "solitaire") handleSolitaireBoardClick(event);
+    else if (gamesTab === "freecell") handleFreecellBoardClick(event);
     return;
   }
   const open = event.target.closest("[data-open-deck]");
@@ -2458,6 +2880,18 @@ viewRoot.addEventListener("click", (event) => {
   }
   const shopButton = event.target.closest("[data-shop-item]");
   if (shopButton) return handleShopPurchase(shopButton.dataset.shopItem);
+  const showcaseButton = event.target.closest("[data-showcase-item]");
+  if (showcaseButton) {
+    const itemId = showcaseButton.dataset.showcaseItem;
+    if (!data.progression.owned.includes(itemId)) return;
+    const selected = data.progression.profile.showcase;
+    if (selected.includes(itemId)) data.progression.profile.showcase = selected.filter((id) => id !== itemId);
+    else if (selected.length >= 4) return showToast("Your showcase has room for four items.", true);
+    else selected.push(itemId);
+    persist();
+    return renderProfile();
+  }
+  if (event.target.closest("[data-action='spin-daily-wheel']")) return spinDailyWheel();
   const skillButton = event.target.closest("[data-skill]");
   if (skillButton) return investSkill(skillButton.dataset.skill);
   if (!button) return;
@@ -2466,6 +2900,35 @@ viewRoot.addEventListener("click", (event) => {
     data.games.solitaire = NovexCardGames.createSolitaireGame();
     persist();
     renderGames();
+  } else if (action === "new-freecell") {
+    data.games.freecell = NovexCardGames.createFreecellGame();
+    persist();
+    renderGames();
+  } else if (action === "new-blackjack") {
+    const botCount = Number(viewRoot.querySelector("#blackjack-bot-count")?.value) || 1;
+    data.games.blackjack = NovexCardGames.createBlackjackGame(botCount);
+    persist();
+    renderGames();
+  } else if (action === "blackjack-hit" || action === "blackjack-stand") {
+    const game = data.games.blackjack;
+    if (game?.status !== "playing") return;
+    const wasPlaying = game.status === "playing";
+    if (action === "blackjack-hit") NovexCardGames.hitBlackjack(game);
+    else NovexCardGames.standBlackjack(game);
+    if (wasPlaying && game.status === "settled") settleBlackjackGame();
+    persist();
+    renderGames();
+  } else if (action === "join-card-leaderboard") {
+    void cardClubAction("join");
+  } else if (action === "refresh-card-club") {
+    cardClubState.loaded = false;
+    void loadCardClub();
+  } else if (action === "join-tournament") {
+    void cardClubAction("join-tournament", button.dataset.tournamentId);
+  } else if (action === "select-tournament") {
+    cardClubState.activeTournamentId = button.dataset.tournamentId;
+    cardClubState.loaded = false;
+    void loadCardClub();
   } else if (action === "solitaire-hint") {
     showToast(NovexCardGames.hintFor(data.games.solitaire));
   } else if (action === "budget-suggest") {
@@ -2661,6 +3124,13 @@ document.addEventListener("submit", (event) => {
     goal.savedCents = Math.min(goal.targetCents, goal.savedCents + amountCents);
     persist();
     renderBudget();
+  } else if (event.target.id === "create-tournament-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const name = String(form.get("name") || "").trim();
+    const gameType = String(form.get("gameType") || "");
+    if (!name || !["solitaire", "freecell", "blackjack"].includes(gameType)) return showToast("Choose a tournament name and game.", true);
+    void cardClubAction("create-tournament", "", { name: name.slice(0, 48), gameType });
   } else if (event.target.id === "game-host-form") {
     event.preventDefault();
     const displayName = String(new FormData(event.target).get("displayName") || "").trim();
@@ -2727,13 +3197,24 @@ document.addEventListener("submit", (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
     data.progression.profile.displayName = String(form.get("displayName") || "").trim().slice(0, 28);
-    data.progression.profile.avatar = String(form.get("avatar") || "⌬");
+    const avatar = String(form.get("avatar") || "⌬");
+    const allowedAvatars = AVATAR_OPTIONS.filter((option, index) => index < 8 ||
+      SHOP_ITEMS.some((item) => item.type === "avatar" && item.value === option && data.progression.owned.includes(item.id)));
+    data.progression.profile.avatar = allowedAvatars.includes(avatar) ? avatar : "⌬";
     const title = String(form.get("title") || "");
     const allowedTitles = SHOP_ITEMS.filter((item) => item.type === "title" && data.progression.owned.includes(item.id)).map((item) => item.value);
     data.progression.profile.title = allowedTitles.includes(title) ? title : "";
     const frame = String(form.get("frame") || "");
     const allowedFrames = SHOP_ITEMS.filter((item) => item.type === "frame" && data.progression.owned.includes(item.id)).map((item) => item.value);
     data.progression.profile.frame = allowedFrames.includes(frame) ? frame : "";
+    const banner = String(form.get("banner") || "default");
+    const allowedBanners = SHOP_ITEMS.filter((item) => item.type === "banner" && data.progression.owned.includes(item.id)).map((item) => item.value);
+    data.progression.profile.banner = banner === "default" || allowedBanners.includes(banner) ? banner : "default";
+    const favoriteGame = String(form.get("favoriteGame") || "solitaire");
+    data.progression.profile.favoriteGame = FAVORITE_GAMES.some(([id]) => id === favoriteGame) ? favoriteGame : "solitaire";
+    const favoriteDeck = String(form.get("favoriteDeck") || "classic");
+    const allowedDecks = SHOP_ITEMS.filter((item) => item.type === "cardDeck" && data.progression.owned.includes(item.id)).map((item) => item.value);
+    data.progression.profile.favoriteDeck = favoriteDeck === "classic" || allowedDecks.includes(favoriteDeck) ? favoriteDeck : "classic";
     persist();
     updateHeader();
     renderProfile();
