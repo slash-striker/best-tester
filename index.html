@@ -4,12 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#090b14">
-    <meta name="description" content="Novex Learner — a personal study vault for recall, writing, and progress.">
-    <title>Novex Learner — personal learning system</title>
+    <meta name="description" content="Novex Learner — a personal study vault, budget planner, and card table.">
+    <title>Novex Learner — learning, budgeting, and games</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+    <script src="supabase-config.js" defer></script>
+    <script src="budget.js" defer></script>
+    <script src="card-games.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -34,7 +38,7 @@
           <p id="auth-message" class="auth-message" role="status" aria-live="polite"></p>
           <button id="auth-submit" class="button button-primary auth-submit" type="submit">Sign in →</button>
         </form>
-        <div class="auth-local-note"><span class="live-dot"></span><span>Local profile only—not secure authentication. The password is hashed, but study data is not encrypted. No cross-device sync or password recovery. Your first profile imports any existing local decks.</span></div>
+        <div class="auth-local-note"><span class="live-dot"></span><span>Local profile only—not secure authentication. The password is hashed, but profile and budget data are not encrypted. No cross-device sync or password recovery. Your first profile imports any existing local decks.</span></div>
       </div>
     </section>
     <div class="app-shell" hidden>
@@ -49,6 +53,8 @@
           <button class="nav-link" data-nav="decks"><span class="nav-icon">▤</span>Study decks <span id="nav-deck-count" class="nav-count">0</span></button>
           <button class="nav-link" data-nav="progress"><span class="nav-icon">⌁</span>Progress</button>
           <button class="nav-link" data-nav="arcade"><span class="nav-icon">⚡</span>Arcade</button>
+          <button class="nav-link" data-nav="budget"><span class="nav-icon">◈</span>Budget</button>
+          <button class="nav-link" data-nav="games"><span class="nav-icon">♠</span>Card games</button>
           <button class="nav-link" data-nav="shop"><span class="nav-icon">◇</span>Shop</button>
           <button class="nav-link" data-nav="profile"><span class="nav-icon">◉</span>Profile</button>
           <button class="nav-link" data-nav="settings"><span class="nav-icon">⚙</span>Settings</button>

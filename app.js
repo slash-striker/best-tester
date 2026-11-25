@@ -33,6 +33,9 @@ let timerId = null;
 let importDeckId = "";
 let toastTimer = null;
 let sessionTimerEndsAt = 0;
+let gamesTab = "solitaire";
+let supabaseClient = null;
+let multiplayerState = { room: null, user: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
 const ACHIEVEMENTS = [
   { id: "first-session", name: "First Contact", description: "Complete your first learning session.", icon: "⌁" },
   { id: "night-owl", name: "Night Owl", description: "Study after midnight.", icon: "☾", secret: true },
@@ -69,7 +72,13 @@ function uid() {
 }
 
 function createEmptyData() {
-  return { decks: [{ id: uid(), name: "My first deck", pairs: [] }], history: [], progression: defaultProgression() };
+  return {
+    decks: [{ id: uid(), name: "My first deck", pairs: [] }],
+    history: [],
+    progression: defaultProgression(),
+    budget: NovexBudget.createBudget(),
+    games: NovexCardGames.normalizeGameStats(),
+  };
 }
 
 function defaultProgression() {
@@ -112,6 +121,8 @@ function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === D
           decks: stored.decks.filter((deck) => deck && typeof deck.id === "string" && Array.isArray(deck.pairs)),
           history: stored.history.filter((record) => record && typeof record.id === "string"),
           progression: normalizeProgression(stored.progression),
+          budget: NovexBudget.normalizeBudget(stored.budget),
+          games: NovexCardGames.normalizeGameStats(stored.games),
         };
       }
       if (!allowLegacyMigration) throw new Error("This profile's saved study data has an invalid format.");
@@ -136,6 +147,8 @@ function loadData(storageKey = DATA_KEY, allowLegacyMigration = storageKey === D
     decks: [{ id: uid(), name: migratedPairs.length ? "Chinese vocabulary" : "My first deck", pairs: migratedPairs }],
     history: [],
     progression: defaultProgression(),
+    budget: NovexBudget.createBudget(),
+    games: NovexCardGames.normalizeGameStats(),
   };
 }
 
@@ -260,6 +273,8 @@ function accountStorageKey(kind, username) {
 
 function normalizeData() {
   data.progression = normalizeProgression(data.progression);
+  data.budget = NovexBudget.normalizeBudget(data.budget);
+  data.games = NovexCardGames.normalizeGameStats(data.games);
   data.decks = data.decks.filter((deck) => deck && typeof deck.id === "string" && Array.isArray(deck.pairs)).map((deck) => ({
     ...deck,
     pairs: deck.pairs
@@ -484,7 +499,18 @@ function statsFor(records) {
 }
 
 function updateHeader() {
-  const labels = { dashboard: "NEURO // OS", decks: "STUDY DECKS", deck: "DECK / STUDY", progress: "PROGRESS", settings: "SETTINGS", arcade: "ARCADE", shop: "NEON MARKET", profile: "OPERATOR PROFILE" };
+  const labels = {
+    dashboard: "NEURO // OS",
+    decks: "STUDY DECKS",
+    deck: "DECK / STUDY",
+    progress: "PROGRESS",
+    settings: "SETTINGS",
+    arcade: "ARCADE",
+    budget: "BUDGET LAB",
+    games: "CARD TABLE",
+    shop: "NEON MARKET",
+    profile: "OPERATOR PROFILE",
+  };
   document.querySelector("#current-section").textContent = labels[activeView] || "DASHBOARD";
   document.querySelector("#nav-deck-count").textContent = data.decks.length;
   document.querySelector("#today-label").textContent = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(new Date()).toUpperCase();
@@ -509,6 +535,8 @@ function setView(view) {
   else if (view === "deck") renderDeck();
   else if (view === "progress") renderProgress();
   else if (view === "arcade") renderArcade();
+  else if (view === "budget") renderBudget();
+  else if (view === "games") renderGames();
   else if (view === "shop") renderShop();
   else if (view === "profile") renderProfile();
   else renderSettings();
@@ -553,6 +581,8 @@ function renderCurrentView() {
   else if (activeView === "deck") renderDeck();
   else if (activeView === "progress") renderProgress();
   else if (activeView === "arcade") renderArcade();
+  else if (activeView === "budget") renderBudget();
+  else if (activeView === "games") renderGames();
   else if (activeView === "shop") renderShop();
   else if (activeView === "profile") renderProfile();
   else renderSettings();
@@ -818,6 +848,379 @@ function renderArcade() {
   `;
 }
 
+function formatMoney(cents, currency = data.budget.currency) {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format((Number(cents) || 0) / 100);
+}
+
+function localDateKey(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+function renderBudget() {
+  const budget = data.budget;
+  const currencySymbol = escapeHtml(new Intl.NumberFormat(undefined, { style: "currency", currency: budget.currency })
+    .formatToParts(0).find((part) => part.type === "currency")?.value || budget.currency);
+  const summary = NovexBudget.summarizeBudget(budget);
+  const categories = budget.categories;
+  const monthLabel = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
+  const recentExpenses = [...budget.expenses]
+    .sort((left, right) => right.date.localeCompare(left.date) || right.id.localeCompare(left.id))
+    .slice(0, 8);
+  const tips = [
+    "Give every dollar a job before the month begins. A plan is a guide, not a guilt trip.",
+    "Try the 50/30/20 split as a starting point: needs, wants, and future-you. Adjust it to fit real life.",
+    "A tiny automatic-feeling habit can help: record a purchase right after you make it.",
+    "Savings is a category, not just whatever is left over. Even a small planned amount counts.",
+    "If one category is over, learn from it and rebalance next month. The goal is awareness, not perfection.",
+  ];
+  const tip = tips[(new Date().getDate() - 1) % tips.length];
+  const totalGoals = summary.goalTargetCents;
+  const savedGoals = summary.goalSavedCents;
+  const challenges = [
+    { done: budget.monthlyIncomeCents > 0, label: "Set your monthly take-home plan" },
+    { done: categories.every((category) => category.limitCents > 0), label: "Give all three buckets a job" },
+    { done: budget.expenses.some((expense) => expense.date.slice(0, 7) === summary.month), label: "Log your first purchase this month" },
+    { done: budget.goals.length > 0, label: "Create a goal for future-you" },
+  ];
+  viewRoot.innerHTML = `
+    <section class="page-heading budget-heading"><div><div class="eyebrow"><span class="pulse"></span> MONEY LAB / YOUR PLAN, YOUR PACE</div><h1>Make money <span>make sense.</span></h1><p class="lead">A friendly, private budget planner. Start with a simple split, track what you spend, and celebrate the little wins.</p></div><div class="budget-month">${escapeHtml(monthLabel)}<small>LOCAL TO THIS BROWSER</small></div></section>
+    <section class="metric-grid budget-metrics">
+      <article class="metric-card"><div class="metric-head">TAKE-HOME PLAN <b>↗</b></div><strong>${formatMoney(budget.monthlyIncomeCents)}</strong><small>Monthly income you entered</small></article>
+      <article class="metric-card"><div class="metric-head">SPENT THIS MONTH <b>⌁</b></div><strong>${formatMoney(summary.spentCents)}</strong><small>${budget.expenses.filter((expense) => expense.date.slice(0, 7) === summary.month).length} purchases logged</small></article>
+      <article class="metric-card ${summary.remainingCents < 0 ? "budget-over" : ""}"><div class="metric-head">LEFT TO PLAN <b>◈</b></div><strong>${formatMoney(summary.remainingCents)}</strong><small>Income minus recorded spending</small></article>
+      <article class="metric-card"><div class="metric-head">GOAL SAVINGS <b>✦</b></div><strong>${formatMoney(savedGoals)}</strong><small>Across ${budget.goals.length} ${budget.goals.length === 1 ? "goal" : "goals"}</small></article>
+    </section>
+    <div class="budget-layout">
+      <div class="budget-main-column">
+        <section class="panel budget-panel">
+          <div class="section-heading"><div><span class="section-code">01 / START WITH YOUR TAKE-HOME</span><h2>Build your monthly plan</h2></div><span class="budget-sticker">NO JUDGMENT ZONE</span></div>
+          <form id="budget-income-form" class="budget-income-form">
+            <label class="setting-field"><span>MONTHLY TAKE-HOME</span><div class="money-input"><b aria-hidden="true">${currencySymbol}</b><input name="income" type="number" min="0" max="10000000" step="0.01" value="${(budget.monthlyIncomeCents / 100).toFixed(2)}" required aria-label="Monthly take-home income"></div></label>
+            <label class="setting-field"><span>CURRENCY</span><select name="currency">${NovexBudget.currencies.map((currency) => `<option value="${currency}" ${budget.currency === currency ? "selected" : ""}>${currency}</option>`).join("")}</select></label>
+            <button class="button button-primary" type="submit">Save plan →</button>
+          </form>
+          <div class="budget-section-heading"><div><span class="section-code">THE 50 / 30 / 20 STARTER SPLIT</span><p class="panel-copy">A flexible starting point: 50% needs, 30% wants, 20% savings.</p></div><button class="button button-outline" type="button" data-action="budget-suggest">Use suggested split</button></div>
+          <form id="budget-plan-form" class="budget-category-list">
+            ${categories.map((category) => {
+              const spent = summary.byCategory[category.id] || 0;
+              const limit = category.limitCents;
+              const percentage = limit ? Math.min(100, Math.round((spent / limit) * 100)) : 0;
+              const remainder = limit - spent;
+              return `<label class="budget-category budget-${category.color}"><span class="budget-category-icon">${category.id === "needs" ? "⌂" : category.id === "wants" ? "✦" : "↗"}</span><span class="budget-category-info"><strong>${category.name}</strong><small>${category.percent}% guide · ${formatMoney(spent)} spent · ${formatMoney(remainder)} left</small><span class="budget-track"><i style="width:${percentage}%"></i></span></span><span class="budget-category-input"><small>MONTHLY LIMIT</small><span class="money-input"><b aria-hidden="true">${currencySymbol}</b><input name="${category.id}" data-budget-limit="${category.id}" type="number" min="0" max="10000000" step="0.01" value="${(limit / 100).toFixed(2)}" aria-label="${category.name} monthly limit"></span></span></label>`;
+            }).join("")}
+            <div class="budget-plan-footer"><span>${summary.budgetedCents > budget.monthlyIncomeCents ? "Your planned buckets are above your income. That's okay—adjust them to fit." : "Your buckets are a plan, not a rulebook. Make them yours."}</span><button class="button button-quiet" type="submit">Save category limits</button></div>
+          </form>
+        </section>
+        <section class="panel budget-panel">
+          <div class="section-heading"><div><span class="section-code">02 / KEEP THE RECEIPTS, SKIP THE GUILT</span><h2>Log a purchase</h2></div><span class="budget-sticker">30 SECONDS</span></div>
+          <form id="budget-expense-form" class="budget-expense-form">
+            <label class="setting-field"><span>WHAT WAS IT?</span><input name="description" maxlength="80" placeholder="Coffee, groceries, bus pass…" required></label>
+            <label class="setting-field"><span>AMOUNT</span><div class="money-input"><b aria-hidden="true">${currencySymbol}</b><input name="amount" type="number" min="0.01" max="10000000" step="0.01" placeholder="0.00" required></div></label>
+            <label class="setting-field"><span>BUCKET</span><select name="categoryId">${categories.map((category) => `<option value="${category.id}">${category.name}</option>`).join("")}</select></label>
+            <label class="setting-field"><span>DATE</span><input name="date" type="date" value="${localDateKey()}" required></label>
+            <button class="button button-primary" type="submit">Add purchase +</button>
+          </form>
+          <div class="budget-expenses-heading"><div><span class="section-code">RECENT ACTIVITY</span><p class="panel-copy">Only your entries are shown. Nothing is connected to a bank.</p></div></div>
+          ${recentExpenses.length ? `<div class="budget-expense-list">${recentExpenses.map((expense) => {
+            const category = categories.find((item) => item.id === expense.categoryId);
+            return `<div class="budget-expense-row"><span class="budget-expense-dot budget-${category?.color || "cyan"}"></span><span><strong>${escapeHtml(expense.description)}</strong><small>${escapeHtml(category?.name || "Other")} · ${escapeHtml(expense.date)}</small></span><b>−${formatMoney(expense.amountCents)}</b><button type="button" class="icon-button" data-action="delete-expense" data-id="${escapeHtml(expense.id)}" aria-label="Delete ${escapeHtml(expense.description)}">×</button></div>`;
+          }).join("")}</div>` : `<div class="budget-empty"><span>✧</span><strong>Your first entry is a tiny win.</strong><p>Add a purchase above and your plan will start coming to life.</p></div>`}
+        </section>
+      </div>
+      <aside class="budget-side-column">
+        <section class="panel budget-tip-panel"><div class="budget-tip-orb">✦</div><span class="section-code">A LITTLE MONEY WISDOM</span><h2>Budgeting is a skill, not a personality trait.</h2><p>${escapeHtml(tip)}</p><small>TIP ${String((new Date().getDate() - 1) % tips.length + 1).padStart(2, "0")} / ${String(tips.length).padStart(2, "0")}</small></section>
+        <section class="panel budget-panel">
+          <div class="section-heading"><div><span class="section-code">03 / A REASON TO SAVE</span><h2>Dream fund</h2></div><span class="budget-sticker">FUTURE YOU SAYS HI</span></div>
+          <form id="budget-goal-form" class="budget-goal-form">
+            <label class="setting-field"><span>GOAL NAME</span><input name="name" maxlength="60" placeholder="Concert tickets, new bike…" required></label>
+            <label class="setting-field"><span>TARGET</span><div class="money-input"><b aria-hidden="true">${currencySymbol}</b><input name="target" type="number" min="0.01" max="10000000" step="0.01" placeholder="0.00" required></div></label>
+            <label class="setting-field"><span>WISH DATE (OPTIONAL)</span><input name="deadline" type="date"></label>
+            <button class="button button-primary" type="submit" ${budget.goals.length >= 20 ? "disabled" : ""}>Plant a goal →</button>
+          </form>
+          ${budget.goals.length ? `<div class="budget-goals">${budget.goals.map((goal) => {
+            const progress = Math.min(100, Math.round((goal.savedCents / goal.targetCents) * 100));
+            return `<article class="budget-goal"><div class="budget-goal-top"><strong>${escapeHtml(goal.name)}</strong><button class="text-button" type="button" data-action="delete-goal" data-id="${escapeHtml(goal.id)}" aria-label="Delete ${escapeHtml(goal.name)}">Remove</button></div><div class="budget-track"><i style="width:${progress}%"></i></div><small>${formatMoney(goal.savedCents)} of ${formatMoney(goal.targetCents)} · ${progress}%${goal.deadline ? ` · by ${escapeHtml(goal.deadline)}` : ""}</small><form class="budget-contribute-form" data-goal-id="${escapeHtml(goal.id)}"><label class="sr-only" for="goal-add-${escapeHtml(goal.id)}">Add savings to ${escapeHtml(goal.name)}</label><div class="money-input"><b aria-hidden="true">${currencySymbol}</b><input id="goal-add-${escapeHtml(goal.id)}" name="amount" type="number" min="0.01" step="0.01" max="10000000" placeholder="Add amount" required></div><button class="button button-quiet" type="submit">Add savings</button></form></article>`;
+          }).join("")}</div>` : `<div class="budget-empty compact"><span>✦</span><strong>Give a dream a name.</strong><p>Save toward something that makes you smile.</p></div>`}
+          <div class="budget-goal-summary"><span>ALL GOALS</span><strong>${formatMoney(savedGoals)} <small>of ${formatMoney(totalGoals)}</small></strong></div>
+        </section>
+        <section class="panel budget-challenge-panel"><div class="section-heading"><div><span class="section-code">TINY WINS / THIS MONTH</span><h2>Your money quest</h2></div><span class="coin-chip">${challenges.filter((challenge) => challenge.done).length}/${challenges.length}</span></div><div class="budget-challenges">${challenges.map((challenge) => `<div class="budget-challenge ${challenge.done ? "complete" : ""}"><span>${challenge.done ? "✓" : "·"}</span>${challenge.label}</div>`).join("")}</div><p>Small steps add up. No streaks, no shame, just a clearer picture.</p></section>
+      </aside>
+    </div>
+  `;
+}
+
+function cardRankLabel(rank) {
+  return ({ 1: "A", 11: "J", 12: "Q", 13: "K" })[rank] || String(rank);
+}
+
+function cardSuitSymbol(suit) {
+  return ({ clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠" })[suit] || "♠";
+}
+
+function solitaireCardMarkup(card, source, selected = false) {
+  const color = NovexCardGames.redSuits.includes(card.suit) ? "red" : "black";
+  const face = card.faceUp;
+  const sourceAttributes = source ? `data-card-source="${source.zone}" ${source.zone === "tableau" ? 'data-card-destination="tableau"' : ""} ${source.column != null ? `data-column="${source.column}"` : ""} ${source.index != null ? `data-index="${source.index}"` : ""} ${source.pile != null ? `data-pile="${source.pile}"` : ""}` : "";
+  if (!face) return `<div class="playing-card card-back" aria-label="Face-down card"><span>NL</span></div>`;
+  const label = `${cardRankLabel(card.rank)} of ${card.suit}`;
+  return `<button type="button" class="playing-card ${color} ${selected ? "selected" : ""}" ${sourceAttributes} aria-label="${label}"><span class="card-corner">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span><span class="card-center">${cardSuitSymbol(card.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span></button>`;
+}
+
+function renderSolitaire() {
+  const stats = data.games;
+  const game = stats.solitaire;
+  const cardSlot = (card, source, selected) => solitaireCardMarkup(card, source, selected);
+  const selectedIs = (zone, index, subindex) => game.selected?.zone === zone &&
+    (index == null || game.selected.column === index || game.selected.pile === index) &&
+    (subindex == null || game.selected.index === subindex);
+  const foundations = game.foundations.map((pile, index) => {
+    const top = pile.cards[pile.cards.length - 1];
+    return `<div class="solitaire-slot">${top
+      ? `<button type="button" class="playing-card ${NovexCardGames.redSuits.includes(pile.suit) ? "red" : "black"} ${selectedIs("foundation", index) ? "selected" : ""}" data-card-source="foundation" data-pile="${index}" data-card-destination="foundation" aria-label="Foundation ${pile.suit}, top card ${cardRankLabel(top.rank)}"><span class="card-corner">${cardRankLabel(top.rank)}<i>${cardSuitSymbol(pile.suit)}</i></span><span class="card-center">${cardSuitSymbol(pile.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(top.rank)}<i>${cardSuitSymbol(pile.suit)}</i></span></button>`
+      : `<button type="button" class="solitaire-empty foundation-empty" data-card-destination="foundation" data-pile="${index}" aria-label="Empty ${pile.suit} foundation">${cardSuitSymbol(pile.suit)}</button>`}</div>`;
+  }).join("");
+  const waste = game.waste.length
+    ? cardSlot(game.waste[game.waste.length - 1], { zone: "waste" }, selectedIs("waste"))
+    : `<div class="solitaire-empty" aria-label="Empty waste pile"></div>`;
+  const columns = game.tableau.map((stack, column) => `<div class="tableau-column" data-column="${column}">${stack.length
+    ? stack.map((card, index) => `<div class="tableau-card-wrap" style="--card-offset:${index ? card.faceUp ? "48px" : "21px" : "0px"}">${card.faceUp
+      ? cardSlot(card, { zone: "tableau", column, index }, selectedIs("tableau", column, index))
+      : cardSlot(card, null, false)}</div>`).join("")
+    : `<button type="button" class="solitaire-empty tableau-empty" data-card-destination="tableau" data-column="${column}" aria-label="Empty tableau column, move a king here">K</button>`}</div>`).join("");
+  return `
+    <div class="solitaire-toolbar"><div><span class="section-code">KLONDIKE / DRAW ONE</span><strong>${game.won ? "Deal complete!" : `${game.moves} moves · ${game.stock.length} cards in stock`}</strong></div><div class="solitaire-actions"><button class="button button-outline" type="button" data-action="solitaire-hint">Need a hint?</button><button class="button button-primary" type="button" data-action="new-solitaire">New deal ↻</button></div></div>
+    ${game.won ? `<div class="solitaire-win" role="status">✦ All 52 cards home. You did it!</div>` : ""}
+    <div class="solitaire-scroll"><div class="solitaire-board">
+      <div class="solitaire-top-row"><div class="solitaire-stock-waste"><button type="button" class="solitaire-empty stock-slot ${game.stock.length ? "stock-ready" : ""}" data-action="solitaire-stock" aria-label="${game.stock.length ? "Draw next card" : "Recycle waste pile"}">${game.stock.length ? `<span>↻</span><small>${game.stock.length}</small>` : game.waste.length ? "↻" : "·"}</button><div class="solitaire-slot">${waste}</div></div><div class="solitaire-foundations">${foundations}</div></div>
+      <div class="solitaire-tableau">${columns}</div>
+    </div></div>
+    <div class="solitaire-footer"><span>♣ ${stats.solitaireWins} wins</span><span>Move a face-up card onto the opposite color, one rank higher. Empty columns are for kings.</span><span>♥ ${stats.solitaireMoves} lifetime moves</span></div>
+  `;
+}
+
+function supabaseSetupMessage() {
+  const config = window.NOVEX_SUPABASE_CONFIG;
+  if (!window.supabase?.createClient) return "The Supabase client could not load. Check your internet connection and reload.";
+  if (!config?.url || !config?.anonKey) return "Online rooms need your Supabase project URL and public anon key in supabase-config.js. Solitaire and budgeting work without them.";
+  return "";
+}
+
+function getSupabaseClient() {
+  const issue = supabaseSetupMessage();
+  if (issue) throw new Error(issue);
+  if (!supabaseClient) {
+    const config = window.NOVEX_SUPABASE_CONFIG;
+    supabaseClient = window.supabase.createClient(config.url, config.anonKey);
+  }
+  return supabaseClient;
+}
+
+async function ensureGameUser() {
+  const client = getSupabaseClient();
+  if (multiplayerState.user) return multiplayerState.user;
+  const { data: sessionData, error: sessionError } = await client.auth.getSession();
+  if (sessionError) throw sessionError;
+  if (sessionData.session?.user) {
+    multiplayerState.user = sessionData.session.user;
+    return multiplayerState.user;
+  }
+  const { data, error } = await client.auth.signInAnonymously();
+  if (error) throw error;
+  if (!data.user) throw new Error("Supabase did not return a player identity.");
+  multiplayerState.user = data.user;
+  return data.user;
+}
+
+async function fetchGoFishRoom(roomId) {
+  const client = getSupabaseClient();
+  const user = await ensureGameUser();
+  const [roomResult, playersResult, handResult] = await Promise.all([
+    client.from("gofish_rooms").select("id, code, host_id, status, current_turn, deck_count, last_action, winner_id, created_at").eq("id", roomId).single(),
+    client.from("gofish_players").select("user_id, display_name, seat, books, left_at").eq("room_id", roomId).is("left_at", null).order("seat"),
+    client.from("gofish_hands").select("cards").eq("room_id", roomId).eq("user_id", user.id).maybeSingle(),
+  ]);
+  if (roomResult.error) throw roomResult.error;
+  if (playersResult.error) throw playersResult.error;
+  if (handResult.error) throw handResult.error;
+  multiplayerState.room = {
+    ...roomResult.data,
+    players: playersResult.data || [],
+    hand: handResult.data?.cards || [],
+  };
+  if (roomResult.data.status === "finished" && !data.games.completedRoomIds.includes(roomId)) {
+    data.games.completedRoomIds.push(roomId);
+    data.games.goFishGames += 1;
+    if (roomResult.data.winner_id === user.id) data.games.goFishWins += 1;
+    data.games = NovexCardGames.normalizeGameStats(data.games);
+    persist();
+  }
+  multiplayerState.error = "";
+  localStorage.setItem("novex-gofish-room-id", roomId);
+  subscribeToGoFishRoom(roomId, user.id);
+  if (activeView === "games" && gamesTab === "friends") renderGames();
+}
+
+function subscribeToGoFishRoom(roomId, userId) {
+  const client = getSupabaseClient();
+  if (multiplayerState.channel && multiplayerState.subscribedRoomId === roomId) return;
+  if (multiplayerState.channel) client.removeChannel(multiplayerState.channel);
+  multiplayerState.channel = client.channel(`gofish-room-${roomId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "gofish_rooms", filter: `id=eq.${roomId}` }, () => {
+      fetchGoFishRoom(roomId).catch((error) => setMultiplayerError(error));
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "gofish_players", filter: `room_id=eq.${roomId}` }, () => {
+      fetchGoFishRoom(roomId).catch((error) => setMultiplayerError(error));
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "gofish_hands", filter: `user_id=eq.${userId}` }, () => {
+      fetchGoFishRoom(roomId).catch((error) => setMultiplayerError(error));
+    })
+    .subscribe();
+  multiplayerState.subscribedRoomId = roomId;
+}
+
+function setMultiplayerError(error) {
+  console.error("Friend game connection failed.", error);
+  multiplayerState.loading = false;
+  multiplayerState.error = error.message || "Could not connect to that game room.";
+  if (activeView === "games" && gamesTab === "friends") renderGames();
+}
+
+function goFishDisplayName() {
+  return (data.progression.profile.displayName || currentAccount?.username || "Player").trim().slice(0, 24) || "Player";
+}
+
+async function hostGoFish(displayName) {
+  multiplayerState.loading = true;
+  multiplayerState.error = "";
+  renderGames();
+  try {
+    const client = getSupabaseClient();
+    await ensureGameUser();
+    const { data: room, error } = await client.rpc("create_gofish_room", { p_display_name: displayName.slice(0, 24) });
+    if (error) throw error;
+    await fetchGoFishRoom(room.room_id);
+    multiplayerState.room.code = room.room_code;
+  } catch (error) {
+    setMultiplayerError(error);
+  } finally {
+    multiplayerState.loading = false;
+    renderGames();
+  }
+}
+
+async function joinGoFish(code, displayName) {
+  multiplayerState.loading = true;
+  multiplayerState.error = "";
+  renderGames();
+  try {
+    const client = getSupabaseClient();
+    await ensureGameUser();
+    const { data: roomId, error } = await client.rpc("join_gofish_room", {
+      p_room_code: code.trim().toUpperCase(),
+      p_display_name: displayName.slice(0, 24),
+    });
+    if (error) throw error;
+    await fetchGoFishRoom(roomId);
+  } catch (error) {
+    setMultiplayerError(error);
+  } finally {
+    multiplayerState.loading = false;
+    renderGames();
+  }
+}
+
+async function startGoFish() {
+  try {
+    const { error } = await getSupabaseClient().rpc("start_gofish_room", { p_room_id: multiplayerState.room.id });
+    if (error) throw error;
+    await fetchGoFishRoom(multiplayerState.room.id);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+async function askGoFish(targetId, rank) {
+  try {
+    const { error } = await getSupabaseClient().rpc("ask_gofish_rank", {
+      p_room_id: multiplayerState.room.id,
+      p_target_user_id: targetId,
+      p_rank: Number(rank),
+    });
+    if (error) throw error;
+    await fetchGoFishRoom(multiplayerState.room.id);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+async function leaveGoFish() {
+  const roomId = multiplayerState.room?.id;
+  try {
+    if (roomId) {
+      const { error } = await getSupabaseClient().rpc("leave_gofish_room", { p_room_id: roomId });
+      if (error) throw error;
+    }
+    if (multiplayerState.channel) getSupabaseClient().removeChannel(multiplayerState.channel);
+    multiplayerState = { room: null, user: multiplayerState.user, channel: null, subscribedRoomId: "", loading: false, error: "" };
+    localStorage.removeItem("novex-gofish-room-id");
+    renderGames();
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+function renderGoFish() {
+  const issue = supabaseSetupMessage();
+  const room = multiplayerState.room;
+  const loading = multiplayerState.loading;
+  const status = multiplayerState.error
+    ? `<div class="multiplayer-notice error" role="alert">${escapeHtml(multiplayerState.error)}</div>`
+    : issue ? `<div class="multiplayer-notice" role="status">${escapeHtml(issue)}<small>After setting up Supabase, run the SQL in <code>supabase/setup.sql</code>.</small></div>` : "";
+  if (!room) {
+    const inviteCode = new URLSearchParams(window.location.search).get("room") || "";
+    return `<section class="friend-lobby panel"><div class="friend-lobby-art"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div><div class="friend-lobby-copy"><span class="section-code">ONLINE TABLE / GO FISH</span><h2>Bring your people.</h2><p>Create a room, share the code, and play a friendly round together from anywhere. You can play with 2–4 people.</p></div>${status}<div class="friend-lobby-forms"><form id="game-host-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><button class="button button-primary" type="submit" ${issue || loading ? "disabled" : ""}>${loading ? "Connecting…" : "Create a room →"}</button></form><div class="lobby-divider"><span>OR JOIN WITH A CODE</span></div><form id="game-join-form"><label class="setting-field"><span>YOUR TABLE NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><label class="setting-field"><span>ROOM CODE</span><input name="code" maxlength="6" pattern="[A-Za-z0-9]{6}" value="${escapeHtml(inviteCode)}" placeholder="ABC123" required></label><button class="button button-quiet" type="submit" ${issue || loading ? "disabled" : ""}>Join a friend's room ↗</button></form></div><p class="friend-privacy-note">Players join with a private anonymous game identity. No password, email, or learning profile is shared.</p></section>`;
+  }
+  const playerName = (id) => room.players.find((player) => player.user_id === id)?.display_name || "Player";
+  const opponents = room.players.filter((player) => player.user_id !== multiplayerState.user?.id);
+  const currentTurn = room.current_turn === multiplayerState.user?.id;
+  const rankOptions = [...new Set(room.hand.map((card) => Number(card.rank)))].sort((a, b) => a - b);
+  const playerCards = room.hand.map((card) => `<span class="hand-card ${NovexCardGames.redSuits.includes(card.suit) ? "red" : "black"}"><b>${cardRankLabel(card.rank)}</b><i>${cardSuitSymbol(card.suit)}</i></span>`).join("");
+  return `<section class="friend-room panel">
+    <div class="friend-room-head"><div><span class="section-code">${room.status === "lobby" ? "WAITING ROOM" : room.status === "finished" ? "ROUND COMPLETE" : "LIVE TABLE"} / GO FISH</span><h2>Room <span>${escapeHtml(room.code)}</span></h2><p>${room.status === "lobby" ? "Share the code to invite friends." : room.status === "finished" ? `${escapeHtml(playerName(room.winner_id))} takes this round!` : currentTurn ? "Your turn — ask for a rank in your hand." : `${escapeHtml(playerName(room.current_turn))} is taking a turn.`}</p></div><div class="friend-room-actions"><button type="button" class="button button-outline" data-action="copy-room-link">Copy invite link</button><button type="button" class="button button-quiet" data-action="leave-room">Leave room</button></div></div>
+    ${status}
+    <div class="friend-players">${room.players.map((player) => `<div class="friend-player ${player.user_id === room.current_turn && room.status === "playing" ? "is-turn" : ""}"><span class="friend-player-avatar">${escapeHtml(player.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(player.display_name)}${player.user_id === multiplayerState.user?.id ? " (you)" : ""}</strong><small>${player.books} ${player.books === 1 ? "book" : "books"}${player.user_id === room.host_id ? " · host" : ""}</small></span></div>`).join("")}</div>
+    ${room.status === "lobby" ? `<div class="friend-lobby-wait"><div class="playing-card lobby-card red"><span class="card-center">♥</span></div><div><strong>${room.players.length}/4 players at the table</strong><small>${room.players.length < 2 ? "Waiting for a friend to join…" : "Ready when the host is."}</small></div>${room.host_id === multiplayerState.user?.id ? `<button class="button button-primary" type="button" data-action="start-gofish" ${room.players.length < 2 ? "disabled" : ""}>Deal the cards →</button>` : ""}</div>` : room.status === "playing" ? `<div class="gofish-play-area"><div class="gofish-table-center"><span class="gofish-pile">▧</span><strong>${room.deck_count} cards in the pond</strong><small>${escapeHtml(room.last_action || "The cards are ready.")}</small></div><div class="gofish-hand"><div class="section-heading"><div><span class="section-code">YOUR HAND / ${room.hand.length} CARDS</span><h3>What you can ask for</h3></div></div><div class="hand-cards">${playerCards || "<small>Your hand is empty; draw cards to continue.</small>"}</div></div>${currentTurn ? `<form id="gofish-ask-form"><label class="setting-field"><span>ASK A FRIEND</span><select name="target" required>${opponents.map((player) => `<option value="${escapeHtml(player.user_id)}">${escapeHtml(player.display_name)}</option>`).join("")}</select></label><label class="setting-field"><span>ASK FOR A RANK IN YOUR HAND</span><select name="rank" required>${rankOptions.map((rank) => `<option value="${rank}">${cardRankLabel(rank)}s</option>`).join("")}</select></label><button class="button button-primary" type="submit" ${!opponents.length || !rankOptions.length ? "disabled" : ""}>Ask for cards →</button></form>` : `<div class="friend-turn-note">Your hand is private. You’ll get a turn when it’s your seat’s turn.</div>`}</div>` : `<div class="friend-round-finished"><span>✦</span><strong>Nice game!</strong><p>Ready to shuffle and play another?</p><button class="button button-primary" type="button" data-action="leave-room">Back to rooms →</button></div>`}
+    <p class="friend-privacy-note">Card hands are private to each player. Game actions are checked by the database before the table updates.</p>
+  </section>`;
+}
+
+function renderGames() {
+  const game = data.games.solitaire || NovexCardGames.createSolitaireGame();
+  if (!data.games.solitaire) {
+    data.games.solitaire = game;
+    persist();
+  }
+  viewRoot.innerHTML = `
+    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> NEON CARD TABLE / PLAY SOLO OR TOGETHER</div><h1>Shuffle up <span>some fun.</span></h1><p class="lead">Take a quiet round of solitaire or invite friends to a live table. No bets, no buy-ins, just cards.</p></div><div class="games-sparkle">♠ <span>♥</span> ♦ <span>♣</span></div></section>
+    <div class="games-tabs" role="tablist" aria-label="Card game type"><button type="button" role="tab" aria-selected="${gamesTab === "solitaire"}" class="${gamesTab === "solitaire" ? "active" : ""}" data-games-tab="solitaire">♠ Solitaire <small>SOLO</small></button><button type="button" role="tab" aria-selected="${gamesTab === "friends"}" class="${gamesTab === "friends" ? "active" : ""}" data-games-tab="friends">♥ Play with friends <small>ONLINE</small></button></div>
+    ${gamesTab === "solitaire" ? `<section class="solitaire-panel panel">${renderSolitaire()}</section>` : renderGoFish()}
+    <div class="games-footnote"><span>✧</span> ${data.games.solitaireWins} solitaire ${data.games.solitaireWins === 1 ? "win" : "wins"} · ${data.games.goFishGames} online ${data.games.goFishGames === 1 ? "game" : "games"} played</div>
+  `;
+  if (gamesTab === "friends" && !multiplayerState.room && !multiplayerState.loading && !supabaseSetupMessage()) {
+    const savedRoomId = localStorage.getItem("novex-gofish-room-id");
+    if (savedRoomId) {
+      multiplayerState.loading = true;
+      fetchGoFishRoom(savedRoomId).catch((error) => {
+        localStorage.removeItem("novex-gofish-room-id");
+        setMultiplayerError(error);
+      }).finally(() => {
+        multiplayerState.loading = false;
+        if (activeView === "games" && gamesTab === "friends") renderGames();
+      });
+    }
+  }
+}
+
 function achievementGrid() {
   return `<div class="achievement-grid">${ACHIEVEMENTS.map((achievement) => {
     const unlocked = data.progression.achievements.includes(achievement.id);
@@ -948,7 +1351,7 @@ function renderSettings() {
       <label class="preference-row"><span><strong>Canvas background</strong><small>Set the canvas paper color.</small></span><input id="pref-background" type="color" value="${escapeHtml(settings.background)}"></label>
       <label class="preference-row"><span><strong>Brush width</strong><small>Default stroke width.</small></span><input id="pref-brush" type="range" min="1" max="24" value="${settings.brush}"></label>
       <label class="preference-row"><span><strong>Canvas height</strong><small>Default drawing area size.</small></span><input id="pref-canvas-height" type="range" min="160" max="440" step="10" value="${settings.canvasHeight}"></label>
-    </section><aside class="panel side-panel"><div class="section-heading"><div><span class="section-code">DATA / LOCAL ONLY</span><h2>Your vault</h2></div></div><p class="panel-copy">Your profile backup includes decks, pairs, history, progression, settings, and test preferences. Account credentials are never included. Keep the downloaded file somewhere safe.</p><div class="data-actions"><button class="button button-quiet" data-action="export-all">↓ Download full backup (.txt)</button><button class="button button-outline" data-action="import-profile">↑ Restore full backup</button><button class="button button-outline" data-action="clear-history">Clear test history</button></div><div class="local-status"><span class="live-dot"></span> SAVED ON THIS DEVICE</div><p class="backup-warning">Restoring replaces this profile's current decks, history, progress, and preferences.</p></aside></div>`;
+    </section><aside class="panel side-panel"><div class="section-heading"><div><span class="section-code">DATA / LOCAL ONLY</span><h2>Your vault</h2></div></div><p class="panel-copy">Your profile backup includes decks, pairs, history, progression, budget, game progress, settings, and test preferences. Account credentials are never included. Keep the downloaded file somewhere safe.</p><div class="data-actions"><button class="button button-quiet" data-action="export-all">↓ Download full backup (.txt)</button><button class="button button-outline" data-action="import-profile">↑ Restore full backup</button><button class="button button-outline" data-action="clear-history">Clear test history</button></div><div class="local-status"><span class="live-dot"></span> SAVED ON THIS DEVICE</div><p class="backup-warning">Restoring replaces this profile's current data, including its budget and game progress.</p></aside></div>`;
 }
 
 function renderWeakPairs(limit) {
@@ -1091,6 +1494,14 @@ function downloadBackup() {
     decks: data.decks,
     history: data.history,
     progression: data.progression,
+    budget: data.budget,
+    games: {
+      solitaireWins: data.games.solitaireWins,
+      solitaireMoves: data.games.solitaireMoves,
+      goFishWins: data.games.goFishWins,
+      goFishGames: data.games.goFishGames,
+      solitaire: data.games.solitaire,
+    },
     settings,
     testOptions,
   }, null, 2)], { type: "text/plain;charset=utf-8" });
@@ -1187,6 +1598,8 @@ function validateBackup(value) {
     };
   });
   const progression = normalizeProgression(value.progression);
+  const budget = NovexBudget.normalizeBudget(value.budget);
+  const games = NovexCardGames.normalizeGameStats(value.games);
   const validThemes = new Set(["default", ...SHOP_ITEMS.filter((item) => item.type === "theme").map((item) => item.value)]);
   if (!validThemes.has(progression.equippedTheme) || !progression.owned.includes(`theme-${progression.equippedTheme}`)) progression.equippedTheme = "default";
   progression.owned = progression.owned.filter((id) =>
@@ -1205,6 +1618,8 @@ function validateBackup(value) {
     decks,
     history,
     progression,
+    budget,
+    games,
     settings: normalizeSettings(value.settings),
     testOptions: normalizeTestOptions(value.testOptions),
   };
@@ -1217,9 +1632,15 @@ async function restoreBackup(file) {
   const restored = validateBackup(parsed);
   const deckCount = restored.decks.length;
   const pairCount = restored.decks.reduce((sum, deck) => sum + deck.pairs.length, 0);
-  if (!window.confirm(`Restore ${deckCount} deck${deckCount === 1 ? "" : "s"} and ${pairCount} pair${pairCount === 1 ? "" : "s"}? This replaces the current profile's decks, history, progression, settings, and test preferences.`)) return;
+  if (!window.confirm(`Restore ${deckCount} deck${deckCount === 1 ? "" : "s"} and ${pairCount} pair${pairCount === 1 ? "" : "s"}? This replaces the current profile's study data, budget, game progress, settings, and test preferences.`)) return;
   const previous = { data, settings, testOptions };
-  data = { decks: restored.decks, history: restored.history, progression: restored.progression };
+  data = {
+    decks: restored.decks,
+    history: restored.history,
+    progression: restored.progression,
+    budget: restored.budget,
+    games: restored.games,
+  };
   settings = restored.settings;
   testOptions = restored.testOptions;
   activeDeckId = data.decks[0].id;
@@ -1958,9 +2379,66 @@ function showToast(message, error = false) {
   toastTimer = window.setTimeout(() => toast.remove(), 4400);
 }
 
+function saveSolitaireMove(previouslyWon = false) {
+  const game = data.games.solitaire;
+  data.games.solitaireMoves += 1;
+  if (!previouslyWon && game.won) {
+    data.games.solitaireWins += 1;
+    showToast("ALL 52 HOME · SOLITAIRE WON!");
+  }
+  persist();
+  renderGames();
+}
+
+function handleSolitaireBoardClick(event) {
+  const game = data.games.solitaire;
+  const sourceElement = event.target.closest("[data-card-source]");
+  const destinationElement = event.target.closest("[data-card-destination]");
+  const sameValue = (left, right) => left == null && right == null || Number(left) === Number(right);
+  const sameSource = (selected, element) => selected && selected.zone === element.dataset.cardSource &&
+    sameValue(selected.column, element.dataset.column) &&
+    sameValue(selected.index, element.dataset.index) &&
+    sameValue(selected.pile, element.dataset.pile);
+  if (game.selected && destinationElement && !sameSource(game.selected, destinationElement)) {
+    const destination = destinationElement.dataset.cardDestination === "tableau"
+      ? { zone: "tableau", column: Number(destinationElement.dataset.column) }
+      : { zone: "foundation", pile: Number(destinationElement.dataset.pile) };
+    const wasWon = game.won;
+    if (NovexCardGames.moveSelected(game, destination)) return saveSolitaireMove(wasWon);
+  }
+  if (sourceElement) {
+    const source = {
+      zone: sourceElement.dataset.cardSource,
+      column: sourceElement.dataset.column == null ? undefined : Number(sourceElement.dataset.column),
+      index: sourceElement.dataset.index == null ? undefined : Number(sourceElement.dataset.index),
+      pile: sourceElement.dataset.pile == null ? undefined : Number(sourceElement.dataset.pile),
+    };
+    if (sameSource(game.selected, sourceElement)) game.selected = null;
+    else game.selected = source;
+    persist();
+    renderGames();
+  }
+}
+
 viewRoot.addEventListener("click", (event) => {
   const nav = event.target.closest("[data-nav]");
   if (nav) return setView(nav.dataset.nav);
+  const gameTab = event.target.closest("[data-games-tab]");
+  if (gameTab) {
+    gamesTab = gameTab.dataset.gamesTab;
+    renderGames();
+    return;
+  }
+  const cardAction = event.target.closest("[data-action='solitaire-stock']");
+  if (cardAction) {
+    const wasWon = data.games.solitaire.won;
+    if (NovexCardGames.drawFromStock(data.games.solitaire)) saveSolitaireMove(wasWon);
+    return;
+  }
+  if (event.target.closest("[data-card-source], [data-card-destination]")) {
+    handleSolitaireBoardClick(event);
+    return;
+  }
   const open = event.target.closest("[data-open-deck]");
   if (open) {
     activeDeckId = open.dataset.openDeck;
@@ -1984,7 +2462,44 @@ viewRoot.addEventListener("click", (event) => {
   if (skillButton) return investSkill(skillButton.dataset.skill);
   if (!button) return;
   const { action, id } = button.dataset;
-  if (action === "new-deck") openCreateDeck();
+  if (action === "new-solitaire") {
+    data.games.solitaire = NovexCardGames.createSolitaireGame();
+    persist();
+    renderGames();
+  } else if (action === "solitaire-hint") {
+    showToast(NovexCardGames.hintFor(data.games.solitaire));
+  } else if (action === "budget-suggest") {
+    data.budget.categories = NovexBudget.categories.map((category) => ({
+      ...category,
+      limitCents: Math.round(data.budget.monthlyIncomeCents * category.percent / 100),
+    }));
+    persist();
+    renderBudget();
+  } else if (action === "delete-expense") {
+    if (!window.confirm("Delete this purchase from your budget?")) return;
+    data.budget.expenses = data.budget.expenses.filter((expense) => expense.id !== id);
+    persist();
+    renderBudget();
+  } else if (action === "delete-goal") {
+    if (!window.confirm("Delete this savings goal and its saved progress?")) return;
+    data.budget.goals = data.budget.goals.filter((goal) => goal.id !== id);
+    persist();
+    renderBudget();
+  } else if (action === "start-gofish") {
+    void startGoFish();
+  } else if (action === "leave-room") {
+    void leaveGoFish();
+  } else if (action === "copy-room-link") {
+    const url = new URL(window.location.href);
+    url.searchParams.set("room", multiplayerState.room.code);
+    if (!navigator.clipboard?.writeText) return showToast(`Share room code ${multiplayerState.room.code} with your friends.`, true);
+    navigator.clipboard.writeText(url.toString())
+      .then(() => showToast("INVITE LINK COPIED"))
+      .catch((error) => {
+        console.error("Could not copy the invite link.", error);
+        showToast(`Share room code ${multiplayerState.room.code} with your friends.`, true);
+      });
+  } else if (action === "new-deck") openCreateDeck();
   else if (action === "boss-fight") startBossFight();
   else if (action === "start-test") {
     updateTestOptionsFromUI();
@@ -2090,7 +2605,82 @@ viewRoot.addEventListener("change", (event) => {
 });
 
 document.addEventListener("submit", (event) => {
-  if (event.target.id === "pair-form") {
+  if (event.target.id === "budget-income-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    data.budget.monthlyIncomeCents = NovexBudget.centsFromAmount(form.get("income"));
+    data.budget.currency = NovexBudget.currencies.includes(form.get("currency")) ? form.get("currency") : "USD";
+    data.budget = NovexBudget.normalizeBudget(data.budget);
+    persist();
+    renderBudget();
+  } else if (event.target.id === "budget-plan-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    data.budget.categories = data.budget.categories.map((category) => ({
+      ...category,
+      limitCents: NovexBudget.centsFromAmount(form.get(category.id)),
+    }));
+    data.budget = NovexBudget.normalizeBudget(data.budget);
+    persist();
+    renderBudget();
+  } else if (event.target.id === "budget-expense-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const amountCents = NovexBudget.centsFromAmount(form.get("amount"));
+    const description = String(form.get("description") || "").trim();
+    const date = String(form.get("date") || "");
+    const categoryId = String(form.get("categoryId") || "");
+    if (!description || !amountCents || !data.budget.categories.some((category) => category.id === categoryId) ||
+        !NovexBudget.isValidDate(date)) {
+      return showToast("Add a description, valid amount, category, and date.", true);
+    }
+    data.budget.expenses.push({ id: uid(), description: description.slice(0, 80), amountCents, categoryId, date });
+    data.budget.expenses = data.budget.expenses.slice(-1000);
+    persist();
+    renderBudget();
+  } else if (event.target.id === "budget-goal-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const name = String(form.get("name") || "").trim();
+    const targetCents = NovexBudget.centsFromAmount(form.get("target"));
+    const deadline = String(form.get("deadline") || "");
+    if (!name || !targetCents || (deadline && !NovexBudget.isValidDate(deadline))) {
+      return showToast("Add a goal name and a valid target amount.", true);
+    }
+    if (data.budget.goals.length >= 20) return showToast("You can keep up to 20 goals at a time.", true);
+    data.budget.goals.push({ id: uid(), name: name.slice(0, 60), targetCents, savedCents: 0, deadline });
+    data.budget = NovexBudget.normalizeBudget(data.budget);
+    persist();
+    renderBudget();
+  } else if (event.target.matches(".budget-contribute-form")) {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const goal = data.budget.goals.find((item) => item.id === event.target.dataset.goalId);
+    const amountCents = NovexBudget.centsFromAmount(form.get("amount"));
+    if (!goal || !amountCents) return showToast("Enter a savings amount greater than zero.", true);
+    goal.savedCents = Math.min(goal.targetCents, goal.savedCents + amountCents);
+    persist();
+    renderBudget();
+  } else if (event.target.id === "game-host-form") {
+    event.preventDefault();
+    const displayName = String(new FormData(event.target).get("displayName") || "").trim();
+    if (!displayName) return showToast("Add a name for your game table.", true);
+    void hostGoFish(displayName.slice(0, 24));
+  } else if (event.target.id === "game-join-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const code = String(form.get("code") || "").trim();
+    const displayName = String(form.get("displayName") || "").trim();
+    if (!/^[a-zA-Z0-9]{6}$/.test(code) || !displayName) return showToast("Enter your name and a six-character room code.", true);
+    void joinGoFish(code, displayName.slice(0, 24));
+  } else if (event.target.id === "gofish-ask-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const target = String(form.get("target") || "");
+    const rank = Number(form.get("rank"));
+    if (!target || !Number.isInteger(rank)) return showToast("Choose a player and a rank from your hand.", true);
+    void askGoFish(target, rank);
+  } else if (event.target.id === "pair-form") {
     event.preventDefault();
     const form = new FormData(event.target);
     const left = String(form.get("left") || "").trim();
