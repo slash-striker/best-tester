@@ -18,12 +18,13 @@ const csvInput = document.querySelector("#csv-input");
 const backupInput = document.querySelector("#backup-input");
 const authScreen = document.querySelector("#auth-screen");
 const authForm = document.querySelector("#auth-form");
-const AVATAR_OPTIONS = ["⌬", "◈", "⚡", "☾", "✦", "♜", "猫", "龍", "🦊", "🐙", "🌙", "👑", "🐉", "🦄"];
+const AVATAR_OPTIONS = ["⌬", "◈", "⚡", "☾", "✦", "♜", "🛰️", "🌌", "🦊", "🐙", "🌙", "👑", "🐉", "🦄", "🦋", "🦈", "🦉", "🐺"];
 const FAVORITE_GAMES = [
   ["solitaire", "Klondike Solitaire"],
   ["freecell", "FreeCell"],
   ["blackjack", "Blackjack"],
   ["gofish", "Go Fish"],
+  ["minigolf", "Mini Golf"],
 ];
 let data = loadData();
 let settings = loadSettings();
@@ -41,6 +42,11 @@ let importDeckId = "";
 let toastTimer = null;
 let sessionTimerEndsAt = 0;
 let gamesTab = "solitaire";
+let miniGolfGame = null;
+let miniGolfMode = "solo";
+let miniGolfRoomState = { room: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
+let shopCategory = "all";
+let shopSearch = "";
 let supabaseClient = null;
 let multiplayerState = { room: null, user: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
 let goFishTimerId = null;
@@ -67,20 +73,41 @@ const SHOP_ITEMS = [
   { id: "theme-violet", name: "Afterglow", description: "Violet glass and ultraviolet signals.", type: "theme", value: "violet", price: 120, rarity: "RARE" },
   { id: "theme-toxic", name: "Toxic Grid", description: "An electric acid-green interface.", type: "theme", value: "toxic", price: 160, rarity: "RARE" },
   { id: "theme-red", name: "Red Sector", description: "High-alert crimson command deck.", type: "theme", value: "red", price: 180, rarity: "EPIC" },
+  { id: "theme-glacier", name: "Glacier Pulse", description: "A cool blue signal from the edge of the map.", type: "theme", value: "glacier", price: 210, rarity: "EPIC" },
+  { id: "theme-solar", name: "Solar Flare", description: "Warm amber light with a bright, kinetic edge.", type: "theme", value: "solar", price: 240, rarity: "EPIC" },
   { id: "frame-orbit", name: "Orbital Frame", description: "A rotating holo-ring for your profile.", type: "frame", value: "orbit", price: 90, rarity: "COMMON" },
   { id: "frame-glitch", name: "Glitch Frame", description: "Chromatic edges. Maximum signal.", type: "frame", value: "glitch", price: 140, rarity: "RARE" },
+  { id: "frame-prism", name: "Prism Frame", description: "A refracting spectrum around your operator badge.", type: "frame", value: "prism", price: 240, rarity: "EPIC" },
+  { id: "frame-comet", name: "Comet Frame", description: "A bright trail that follows your profile.", type: "frame", value: "comet", price: 330, rarity: "LEGENDARY" },
   { id: "card-back-royal", name: "Royal Nebula Back", description: "Deep purple foil with a constellation crest.", type: "cardBack", value: "royal", price: 160, rarity: "RARE" },
   { id: "card-back-sakura", name: "Sakura Night Back", description: "Petal-pink ink drifting across midnight.", type: "cardBack", value: "sakura", price: 220, rarity: "EPIC" },
   { id: "card-back-aurora", name: "Aurora Vault Back", description: "An animated ribbon of northern lights.", type: "cardBack", value: "aurora", price: 420, rarity: "LEGENDARY" },
+  { id: "card-back-hex", name: "Hex Circuit Back", description: "A crisp cybernetic pattern for every deal.", type: "cardBack", value: "hex", price: 190, rarity: "RARE" },
+  { id: "card-back-solar", name: "Solar Crown Back", description: "Gold foil with a radiant sunburst.", type: "cardBack", value: "solar", price: 390, rarity: "LEGENDARY" },
   { id: "card-effect-glimmer", name: "Glimmer Reveal", description: "Cards shimmer into view with a soft sparkle.", type: "cardEffect", value: "glimmer", price: 180, rarity: "RARE" },
   { id: "card-effect-prism", name: "Prism Reveal", description: "A prismatic flash follows every reveal.", type: "cardEffect", value: "prism", price: 360, rarity: "EPIC" },
+  { id: "card-effect-orbit", name: "Orbit Reveal", description: "A tiny ring of light tracks each new card.", type: "cardEffect", value: "orbit", price: 290, rarity: "EPIC" },
   { id: "table-velvet", name: "Velvet Lounge", description: "A rich plum table made for a late-night game.", type: "tableTheme", value: "velvet", price: 200, rarity: "EPIC" },
   { id: "table-gold", name: "Gilded Parlor", description: "Warm gold felt with a polished edge.", type: "tableTheme", value: "gold", price: 480, rarity: "LEGENDARY" },
+  { id: "table-deep-ocean", name: "Deep Ocean Felt", description: "A midnight-blue table with a cool glow.", type: "tableTheme", value: "ocean", price: 260, rarity: "RARE" },
+  { id: "table-forest", name: "Emerald Canopy", description: "A calm green felt for a focused game.", type: "tableTheme", value: "forest", price: 310, rarity: "EPIC" },
   { id: "banner-constellation", name: "Star Cartographer", description: "A custom constellation banner for your profile.", type: "banner", value: "constellation", price: 220, rarity: "EPIC" },
+  { id: "banner-nebula", name: "Nebula Drift", description: "A swirling cloud of color behind your profile.", type: "banner", value: "nebula", price: 180, rarity: "RARE" },
+  { id: "banner-deep-space", name: "Deep Space", description: "A quiet field of stars and distant light.", type: "banner", value: "deep-space", price: 300, rarity: "EPIC" },
+  { id: "banner-sunset", name: "After School Sunset", description: "A warm horizon for your next study streak.", type: "banner", value: "sunset", price: 160, rarity: "RARE" },
   { id: "avatar-fox", name: "Foxfire Avatar", description: "A clever fox with a bright little spark.", type: "avatar", value: "🦊", price: 120, rarity: "RARE" },
+  { id: "avatar-octopus", name: "Deep Thinker Avatar", description: "Eight arms for eight ideas at once.", type: "avatar", value: "🐙", price: 120, rarity: "RARE" },
+  { id: "avatar-moon", name: "Moonbeam Avatar", description: "A little lunar calm for the late-night learner.", type: "avatar", value: "🌙", price: 100, rarity: "COMMON" },
+  { id: "avatar-owl", name: "Night Scholar Avatar", description: "Stay curious after the sun goes down.", type: "avatar", value: "🦉", price: 180, rarity: "EPIC" },
+  { id: "avatar-shark", name: "Deep Current Avatar", description: "A bold signal from the blue.", type: "avatar", value: "🦈", price: 180, rarity: "EPIC" },
+  { id: "avatar-butterfly", name: "Metamorph Avatar", description: "A bright reminder that progress compounds.", type: "avatar", value: "🦋", price: 210, rarity: "EPIC" },
   { id: "deck-royal", name: "Royal Card Set", description: "A refined face-card treatment for your favorite deck.", type: "cardDeck", value: "royal", price: 260, rarity: "EPIC" },
+  { id: "deck-aurora", name: "Aurora Card Set", description: "A luminous card face treatment for your favorite deck.", type: "cardDeck", value: "aurora", price: 340, rarity: "LEGENDARY" },
   { id: "title-ghost", name: "Ghost Protocol", description: "An encrypted profile title.", type: "title", value: "Ghost Protocol", price: 75, rarity: "COMMON" },
   { id: "title-neural", name: "Neural Architect", description: "A title for builders of memory.", type: "title", value: "Neural Architect", price: 130, rarity: "RARE" },
+  { id: "title-stargazer", name: "Stargazer", description: "For the curious minds looking beyond the next lesson.", type: "title", value: "Stargazer", price: 105, rarity: "RARE" },
+  { id: "title-grandmaster", name: "Table Grandmaster", description: "A mark of patient play and sharp strategy.", type: "title", value: "Table Grandmaster", price: 220, rarity: "EPIC" },
+  { id: "title-legend", name: "Legend in Progress", description: "A title for the journey, not just the finish line.", type: "title", value: "Legend in Progress", price: 160, rarity: "EPIC" },
   { id: "streak-freeze", name: "Streak Shield", description: "Automatically protects one missed day.", type: "freeze", value: 1, price: 100, rarity: "UTILITY" },
 ];
 const DAILY_CHALLENGES = [
@@ -95,6 +122,13 @@ const DAILY_WHEEL_PRIZES = [
   { label: "60 credits", weight: 20, credits: 60 },
   { label: "100 credits", weight: 12, credits: 100 },
   { label: "Rare cosmetic", weight: 8, cosmetic: true },
+];
+const SHOP_CATEGORIES = [
+  ["all", "All items"],
+  ["theme", "Themes"],
+  ["profile", "Profile style"],
+  ["cards", "Card table"],
+  ["utility", "Utilities"],
 ];
 
 function uid() {
@@ -1030,7 +1064,8 @@ function solitaireCardMarkup(card, source, selected = false) {
   const color = NovexCardGames.redSuits.includes(card.suit) ? "red" : "black";
   const face = card.faceUp;
   const revealClass = data.progression.cardEffect !== "none" ? ` card-reveal effect-${escapeHtml(data.progression.cardEffect)}` : "";
-  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" : "";
+  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" :
+    data.progression.profile.favoriteDeck === "aurora" ? " deck-aurora" : "";
   const backClass = `card-back-${escapeHtml(data.progression.cardBack)}`;
   const sourceAttributes = source ? `data-card-source="${source.zone}" draggable="${face ? "true" : "false"}" ${["tableau", "foundation", "cell"].includes(source.zone) ? `data-card-destination="${source.zone}"` : ""} ${source.column != null ? `data-column="${source.column}"` : ""} ${source.index != null ? `data-index="${source.index}"` : ""} ${source.pile != null ? `data-pile="${source.pile}"` : ""}` : "";
   if (!face) return `<div class="playing-card card-back ${backClass}" aria-label="Face-down card"><span>NL</span></div>`;
@@ -1085,13 +1120,13 @@ function renderFreecell() {
       : `<button type="button" class="solitaire-empty foundation-empty" data-card-destination="foundation" data-index="${index}" aria-label="Empty ${pile.suit} foundation">${cardSuitSymbol(pile.suit)}</button>`}</div>`;
   }).join("");
   const tableau = game.tableau.map((stack, column) => `<div class="freecell-column" data-card-destination="tableau" data-column="${column}">${stack.length
-    ? stack.map((card, index) => `<div class="tableau-card-wrap" style="--card-offset:${index ? "30px" : "0px"}">${renderCard(card, index === stack.length - 1 ? { zone: "tableau", column } : null, game.selected?.zone === "tableau" && game.selected.column === column && index === stack.length - 1)}</div>`).join("")
+    ? stack.map((card, index) => `<div class="tableau-card-wrap" style="--card-offset:${index ? "30px" : "0px"}">${renderCard(card, { zone: "tableau", column, index }, game.selected?.zone === "tableau" && game.selected.column === column && index >= (game.selected.index ?? stack.length - 1))}</div>`).join("")
     : `<button type="button" class="solitaire-empty tableau-empty" data-card-destination="tableau" data-column="${column}" aria-label="Empty free-cell column ${column + 1}">+</button>`}</div>`).join("");
   return `<section class="freecell-panel playing-table" data-table-theme="${escapeHtml(data.progression.tableTheme)}">
     <div class="solitaire-toolbar"><div><span class="section-code">FREECELL / PLAN YOUR ROUTE</span><strong>${game.won ? "All cards home!" : `${game.moves} moves · four open cells`}</strong></div><div class="solitaire-actions"><button class="button button-primary" type="button" data-action="new-freecell">New deal ↻</button></div></div>
     ${game.won ? `<div class="solitaire-win victory-celebration" role="status">✦ Perfectly routed. FreeCell won!</div>` : ""}
     <div class="freecell-board"><div class="freecell-top-row"><div class="freecell-cells">${cells}</div><div class="solitaire-foundations">${foundations}</div></div><div class="freecell-tableau">${tableau}</div></div>
-    <p class="solitaire-footer"><span>♣ ${data.games.freecellWins} wins</span><span>Move one card at a time; build alternating colors down. Any card may enter an empty column.</span><span>Drag or tap a card, then its destination.</span></p>
+    <p class="solitaire-footer"><span>♣ ${data.games.freecellWins} wins</span><span>Build alternating colors down. Move a legal descending run when free cells and empty columns allow it.</span><span>Drag or tap any face-up card, then its destination.</span></p>
   </section>`;
 }
 
@@ -1099,7 +1134,8 @@ function blackjackCardMarkup(card, hidden = false) {
   if (hidden) return `<div class="playing-card card-back card-back-${escapeHtml(data.progression.cardBack)}" aria-label="Dealer's hidden card"><span>NL</span></div>`;
   const color = NovexCardGames.redSuits.includes(card.suit) ? "red" : "black";
   const effect = data.progression.cardEffect !== "none" ? ` card-reveal effect-${escapeHtml(data.progression.cardEffect)}` : "";
-  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" : "";
+  const deckClass = data.progression.profile.favoriteDeck === "royal" ? " deck-royal" :
+    data.progression.profile.favoriteDeck === "aurora" ? " deck-aurora" : "";
   return `<div class="playing-card ${color}${deckClass}${effect}" aria-label="${cardRankLabel(card.rank)} of ${card.suit}"><span class="card-corner">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span><span class="card-center">${cardSuitSymbol(card.suit)}</span><span class="card-corner card-corner-bottom">${cardRankLabel(card.rank)}<i>${cardSuitSymbol(card.suit)}</i></span></div>`;
 }
 
@@ -1157,7 +1193,7 @@ async function fetchGoFishRoom(roomId) {
   const user = await ensureGameUser();
   const [roomResult, playersResult, handResult] = await Promise.all([
     client.from("gofish_rooms").select("id, code, host_id, status, current_turn, deck_count, last_action, winner_id, turn_timer_seconds, turn_deadline_at, end_reason, created_at").eq("id", roomId).single(),
-    client.from("gofish_players").select("user_id, display_name, seat, books, left_at").eq("room_id", roomId).is("left_at", null).order("seat"),
+    client.from("gofish_players").select("user_id, display_name, seat, books, left_at, is_bot").eq("room_id", roomId).is("left_at", null).order("seat"),
     client.from("gofish_hands").select("cards").eq("room_id", roomId).eq("user_id", user.id).maybeSingle(),
   ]);
   if (roomResult.error) throw roomResult.error;
@@ -1185,6 +1221,115 @@ async function fetchGoFishRoom(roomId) {
   localStorage.setItem("novex-gofish-room-id", roomId);
   subscribeToGoFishRoom(roomId, user.id);
   if (activeView === "games" && gamesTab === "friends") renderGames();
+}
+
+async function fetchMiniGolfRoom(roomId) {
+  const client = getSupabaseClient();
+  const user = await ensureGameUser();
+  const [roomResult, playersResult] = await Promise.all([
+    client.from("minigolf_rooms").select("id,code,host_id,status,current_turn,hole,winner_id,winner_seat,last_action,created_at").eq("id", roomId).single(),
+    client.from("minigolf_players").select("room_id,seat,user_id,display_name,is_bot,scores,hole_strokes,remaining,holed,joined_at").eq("room_id", roomId).is("left_at", null).order("seat"),
+  ]);
+  if (roomResult.error) throw roomResult.error;
+  if (playersResult.error) throw playersResult.error;
+  miniGolfRoomState.room = { ...roomResult.data, players: playersResult.data || [] };
+  miniGolfRoomState.error = "";
+  localStorage.setItem("novex-minigolf-room-id", roomId);
+  subscribeToMiniGolfRoom(roomId);
+  if (activeView === "games" && gamesTab === "minigolf" && miniGolfMode === "friends") renderGames();
+  return user;
+}
+
+function subscribeToMiniGolfRoom(roomId) {
+  const client = getSupabaseClient();
+  if (miniGolfRoomState.channel && miniGolfRoomState.subscribedRoomId === roomId) return;
+  if (miniGolfRoomState.channel) client.removeChannel(miniGolfRoomState.channel);
+  miniGolfRoomState.channel = client.channel(`minigolf-room-${roomId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "minigolf_rooms", filter: `id=eq.${roomId}` }, () => {
+      fetchMiniGolfRoom(roomId).catch(setMiniGolfError);
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "minigolf_players", filter: `room_id=eq.${roomId}` }, () => {
+      fetchMiniGolfRoom(roomId).catch(setMiniGolfError);
+    })
+    .subscribe();
+  miniGolfRoomState.subscribedRoomId = roomId;
+}
+
+function setMiniGolfError(error) {
+  console.error("Mini-golf room connection failed.", error);
+  miniGolfRoomState.loading = false;
+  miniGolfRoomState.error = error.message || "Could not connect to the mini-golf room.";
+  if (activeView === "games" && gamesTab === "minigolf" && miniGolfMode === "friends") renderGames();
+}
+
+async function hostMiniGolfRoom(displayName) {
+  miniGolfRoomState.loading = true;
+  miniGolfRoomState.error = "";
+  renderGames();
+  try {
+    const client = getSupabaseClient();
+    await ensureGameUser();
+    const { data: result, error } = await client.rpc("create_minigolf_room", { p_display_name: displayName.slice(0, 24) });
+    if (error) throw error;
+    await fetchMiniGolfRoom(result.room_id);
+  } catch (error) {
+    setMiniGolfError(error);
+  } finally {
+    miniGolfRoomState.loading = false;
+    renderGames();
+  }
+}
+
+async function joinMiniGolfRoom(code, displayName) {
+  miniGolfRoomState.loading = true;
+  miniGolfRoomState.error = "";
+  renderGames();
+  try {
+    const client = getSupabaseClient();
+    await ensureGameUser();
+    const { data: roomId, error } = await client.rpc("join_minigolf_room", {
+      p_room_code: code.trim().toUpperCase(),
+      p_display_name: displayName.slice(0, 24),
+    });
+    if (error) throw error;
+    await fetchMiniGolfRoom(roomId);
+  } catch (error) {
+    setMiniGolfError(error);
+  } finally {
+    miniGolfRoomState.loading = false;
+    renderGames();
+  }
+}
+
+async function miniGolfRoomAction(action, value) {
+  const roomId = miniGolfRoomState.room?.id;
+  if (!roomId) return;
+  try {
+    let result;
+    if (action === "fill") result = await getSupabaseClient().rpc("fill_minigolf_bots", { p_room_id: roomId, p_count: Number(value) });
+    else if (action === "start") result = await getSupabaseClient().rpc("start_minigolf_room", { p_room_id: roomId });
+    else if (action === "shot") result = await getSupabaseClient().rpc("play_minigolf_shot", { p_room_id: roomId, p_power: value.power, p_angle: value.angle });
+    if (result?.error) throw result.error;
+    await fetchMiniGolfRoom(roomId);
+  } catch (error) {
+    setMiniGolfError(error);
+  }
+}
+
+async function leaveMiniGolfRoom() {
+  const roomId = miniGolfRoomState.room?.id;
+  try {
+    if (roomId) {
+      const { error } = await getSupabaseClient().rpc("leave_minigolf_room", { p_room_id: roomId });
+      if (error) throw error;
+    }
+    if (miniGolfRoomState.channel) getSupabaseClient().removeChannel(miniGolfRoomState.channel);
+    miniGolfRoomState = { room: null, channel: null, subscribedRoomId: "", loading: false, error: "" };
+    localStorage.removeItem("novex-minigolf-room-id");
+    renderGames();
+  } catch (error) {
+    setMiniGolfError(error);
+  }
 }
 
 function subscribeToGoFishRoom(roomId, userId) {
@@ -1261,6 +1406,19 @@ async function startGoFish() {
     const { error } = await getSupabaseClient().rpc("start_gofish_room", { p_room_id: multiplayerState.room.id });
     if (error) throw error;
     await fetchGoFishRoom(multiplayerState.room.id);
+  } catch (error) {
+    setMultiplayerError(error);
+  }
+}
+
+async function fillGoFishBots() {
+  const roomId = multiplayerState.room?.id;
+  const count = Number(viewRoot.querySelector("#gofish-bot-count")?.value) || 1;
+  if (!roomId) return;
+  try {
+    const { error } = await getSupabaseClient().rpc("fill_gofish_bots", { p_room_id: roomId, p_count: count });
+    if (error) throw error;
+    await fetchGoFishRoom(roomId);
   } catch (error) {
     setMultiplayerError(error);
   }
@@ -1389,8 +1547,8 @@ function renderGoFish() {
   return `<section class="friend-room panel">
     <div class="friend-room-head"><div><span class="section-code">${room.status === "lobby" ? "WAITING ROOM" : room.status === "finished" ? "ROUND COMPLETE" : "LIVE TABLE"} / GO FISH</span><h2>Room <span>${escapeHtml(room.code)}</span></h2><p>${room.status === "lobby" ? "Share the code to invite friends." : room.status === "finished" ? hasWinner ? `${escapeHtml(playerName(room.winner_id))} wins with the most books.` : room.end_reason === "host_ended" ? "The host ended the game. No winner was recorded." : "The round ended without a winner." : currentTurn ? "Your turn — ask for a rank in your hand." : `${escapeHtml(playerName(room.current_turn))} is taking a turn.`}</p></div><div class="friend-room-actions"><button type="button" class="button button-outline" data-action="copy-room-link">Copy invite link</button><button type="button" class="button button-quiet" data-action="leave-room">Leave room</button></div></div>
     ${status}${rules}
-    <div class="friend-players">${room.players.map((player) => `<div class="friend-player ${player.user_id === room.current_turn && room.status === "playing" ? "is-turn" : ""}"><span class="friend-player-avatar">${escapeHtml(player.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(player.display_name)}${player.user_id === multiplayerState.user?.id ? " (you)" : ""}</strong><small>${player.books} ${player.books === 1 ? "book" : "books"}${player.user_id === room.host_id ? " · host" : ""}</small></span></div>`).join("")}</div>
-    ${room.status === "lobby" ? `<div class="friend-lobby-wait"><div class="playing-card lobby-card red"><span class="card-center">♥</span></div><div><strong>${room.players.length}/4 players at the table</strong><small>${room.players.length < 2 ? "Waiting for a friend to join…" : "Ready when the host is."}</small></div>${room.host_id === multiplayerState.user?.id ? `<label class="gofish-timer-setting"><span>TURN TIMER</span><select data-gofish-timer aria-label="Turn timer"><option value="0" ${room.turn_timer_seconds === 0 ? "selected" : ""}>No timer</option><option value="30" ${room.turn_timer_seconds === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${room.turn_timer_seconds === 60 ? "selected" : ""}>60 seconds</option><option value="90" ${room.turn_timer_seconds === 90 ? "selected" : ""}>90 seconds</option></select></label><button class="button button-primary" type="button" data-action="start-gofish" ${room.players.length < 2 ? "disabled" : ""}>Deal the cards →</button>` : ""}</div>` : room.status === "playing" ? `<div class="gofish-game-summary"><div class="gofish-table-center"><span class="gofish-pile">▧</span><strong>${room.deck_count} cards in the pond</strong><small>${escapeHtml(room.last_action || "The cards are ready.")}</small></div>${timer}<div class="gofish-score-summary"><span>BOOKS COLLECTED</span><strong>${room.players.reduce((sum, player) => sum + player.books, 0)} <small>of 13</small></strong></div></div><div class="gofish-play-area"><div class="gofish-hand"><div class="section-heading"><div><span class="section-code">YOUR HAND / ${room.hand.length} CARDS</span><h3>What you can ask for</h3></div></div><div class="hand-cards">${playerCards || "<small>Your hand is empty; draw cards to continue.</small>"}</div></div>${currentTurn ? `<form id="gofish-ask-form"><label class="setting-field"><span>ASK A FRIEND</span><select name="target" required>${opponents.map((player) => `<option value="${escapeHtml(player.user_id)}">${escapeHtml(player.display_name)}</option>`).join("")}</select></label><label class="setting-field"><span>ASK FOR A RANK IN YOUR HAND</span><select name="rank" required>${rankOptions.map((rank) => `<option value="${rank}">${cardRankLabel(rank)}s</option>`).join("")}</select></label><button class="button button-primary" type="submit" ${!opponents.length || !rankOptions.length ? "disabled" : ""}>Ask for cards →</button></form>` : `<div class="friend-turn-note">${escapeHtml(playerName(room.current_turn))} is up. Your hand is private; the table will update when your turn starts.</div>`}</div>${room.host_id === multiplayerState.user?.id ? `<div class="gofish-host-actions"><button type="button" class="button button-danger" data-action="end-gofish">End game</button><small>Ends the round for everyone without naming a winner.</small></div>` : ""}` : `<div class="friend-round-finished"><span>${hasWinner ? "✦" : "↗"}</span><strong>${hasWinner ? "Round complete" : "Game ended"}</strong><p>${hasWinner ? `${escapeHtml(playerName(room.winner_id))} collected the most books.` : "No winner or game result was recorded."}</p><button class="button button-primary" type="button" data-action="leave-room">Back to rooms →</button></div>`}
+    <div class="friend-players">${room.players.map((player) => `<div class="friend-player ${player.user_id === room.current_turn && room.status === "playing" ? "is-turn" : ""}"><span class="friend-player-avatar">${escapeHtml(player.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(player.display_name)}${player.user_id === multiplayerState.user?.id ? " (you)" : ""}</strong><small>${player.books} ${player.books === 1 ? "book" : "books"}${player.user_id === room.host_id ? " · host" : ""}${player.is_bot ? " · bot" : ""}</small></span></div>`).join("")}</div>
+    ${room.status === "lobby" ? `<div class="friend-lobby-wait"><div class="playing-card lobby-card red"><span class="card-center">♥</span></div><div><strong>${room.players.length}/4 seats at the table</strong><small>${room.players.length < 2 ? "Invite a friend or fill a seat with a bot." : "Ready when the host is."}</small></div>${room.host_id === multiplayerState.user?.id ? `${room.players.length < 4 ? `<label class="gofish-timer-setting"><span>ADD BOTS</span><select id="gofish-bot-count" aria-label="Number of bots to add">${[1, 2, 3].map((count) => `<option value="${count}">${count}</option>`).join("")}</select></label><button class="button button-quiet" type="button" data-action="fill-gofish-bots">Add bots</button>` : ""}<label class="gofish-timer-setting"><span>TURN TIMER</span><select data-gofish-timer aria-label="Turn timer"><option value="0" ${room.turn_timer_seconds === 0 ? "selected" : ""}>No timer</option><option value="30" ${room.turn_timer_seconds === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${room.turn_timer_seconds === 60 ? "selected" : ""}>60 seconds</option><option value="90" ${room.turn_timer_seconds === 90 ? "selected" : ""}>90 seconds</option></select></label><button class="button button-primary" type="button" data-action="start-gofish" ${room.players.length < 2 ? "disabled" : ""}>Deal the cards →</button>` : ""}</div>` : room.status === "playing" ? `<div class="gofish-game-summary"><div class="gofish-table-center"><span class="gofish-pile">▧</span><strong>${room.deck_count} cards in the pond</strong><small>${escapeHtml(room.last_action || "The cards are ready.")}</small></div>${timer}<div class="gofish-score-summary"><span>BOOKS COLLECTED</span><strong>${room.players.reduce((sum, player) => sum + player.books, 0)} <small>of 13</small></strong></div></div><div class="gofish-play-area"><div class="gofish-hand"><div class="section-heading"><div><span class="section-code">YOUR HAND / ${room.hand.length} CARDS</span><h3>What you can ask for</h3></div></div><div class="hand-cards">${playerCards || "<small>Your hand is empty; draw cards to continue.</small>"}</div></div>${currentTurn ? `<form id="gofish-ask-form"><label class="setting-field"><span>ASK A FRIEND</span><select name="target" required>${opponents.map((player) => `<option value="${escapeHtml(player.user_id)}">${escapeHtml(player.display_name)}</option>`).join("")}</select></label><label class="setting-field"><span>ASK FOR A RANK IN YOUR HAND</span><select name="rank" required>${rankOptions.map((rank) => `<option value="${rank}">${cardRankLabel(rank)}s</option>`).join("")}</select></label><button class="button button-primary" type="submit" ${!opponents.length || !rankOptions.length ? "disabled" : ""}>Ask for cards →</button></form>` : `<div class="friend-turn-note">${escapeHtml(playerName(room.current_turn))} is up. Your hand is private; the table will update when your turn starts.</div>`}</div>${room.host_id === multiplayerState.user?.id ? `<div class="gofish-host-actions"><button type="button" class="button button-danger" data-action="end-gofish">End game</button><small>Ends the round for everyone without naming a winner.</small></div>` : ""}` : `<div class="friend-round-finished"><span>${hasWinner ? "✦" : "↗"}</span><strong>${hasWinner ? "Round complete" : "Game ended"}</strong><p>${hasWinner ? `${escapeHtml(playerName(room.winner_id))} collected the most books.` : "No winner or game result was recorded."}</p><button class="button button-primary" type="button" data-action="leave-room">Back to rooms →</button></div>`}
     <p class="friend-privacy-note">Card hands are private to each player. Game actions are checked by the database before the table updates.</p>
   </section>`;
 }
@@ -1403,17 +1561,33 @@ function renderGames() {
       <button type="button" role="tab" aria-selected="${gamesTab === "solitaire"}" class="${gamesTab === "solitaire" ? "active" : ""}" data-games-tab="solitaire">♠ Solitaire <small>SOLO</small></button>
       <button type="button" role="tab" aria-selected="${gamesTab === "freecell"}" class="${gamesTab === "freecell" ? "active" : ""}" data-games-tab="freecell">♣ FreeCell <small>SOLO</small></button>
       <button type="button" role="tab" aria-selected="${gamesTab === "blackjack"}" class="${gamesTab === "blackjack" ? "active" : ""}" data-games-tab="blackjack">♦ Blackjack <small>BOTS</small></button>
+      <button type="button" role="tab" aria-selected="${gamesTab === "minigolf"}" class="${gamesTab === "minigolf" ? "active" : ""}" data-games-tab="minigolf">⛳ Mini Golf <small>COURSE</small></button>
       <button type="button" role="tab" aria-selected="${gamesTab === "community"}" class="${gamesTab === "community" ? "active" : ""}" data-games-tab="community">✦ Leaderboard <small>EVENTS</small></button>
       <button type="button" role="tab" aria-selected="${gamesTab === "friends"}" class="${gamesTab === "friends" ? "active" : ""}" data-games-tab="friends">♥ Go Fish <small>FRIENDS</small></button>
     </div>
     ${gamesTab === "solitaire" ? `<section class="solitaire-panel panel">${renderSolitaire()}</section>`
       : gamesTab === "freecell" ? renderFreecell()
         : gamesTab === "blackjack" ? renderBlackjack()
+          : gamesTab === "minigolf" ? renderMiniGolf()
           : gamesTab === "community" ? renderCardClub()
             : renderGoFish()}
-    <div class="games-footnote"><span>✧</span> ${data.games.totalGamesPlayed} games played · ${data.games.highestWinStreak} best win streak · ${data.games.goFishGames} online Go Fish rounds</div>
+    <div class="games-footnote"><span>✧</span> ${data.games.totalGamesPlayed} games played · ${data.games.highestWinStreak} best win streak · ${data.games.goFishGames} online Go Fish rounds · ${data.games.miniGolfGames} mini-golf rounds</div>
   `;
   if (gamesTab === "friends") syncGoFishTurnTimer();
+  if (gamesTab === "minigolf" && miniGolfMode === "friends" && !miniGolfRoomState.room &&
+      !miniGolfRoomState.loading && !supabaseSetupMessage()) {
+    const savedRoomId = localStorage.getItem("novex-minigolf-room-id");
+    if (savedRoomId) {
+      miniGolfRoomState.loading = true;
+      fetchMiniGolfRoom(savedRoomId).catch((error) => {
+        localStorage.removeItem("novex-minigolf-room-id");
+        setMiniGolfError(error);
+      }).finally(() => {
+        miniGolfRoomState.loading = false;
+        if (activeView === "games" && gamesTab === "minigolf" && miniGolfMode === "friends") renderGames();
+      });
+    }
+  }
   if (gamesTab === "community" && !supabaseSetupMessage() && !cardClubState.loading && !cardClubState.loaded) {
     void loadCardClub();
   }
@@ -1429,6 +1603,56 @@ function renderGames() {
         if (activeView === "games" && gamesTab === "friends") renderGames();
       });
     }
+  }
+
+  function renderMiniGolf() {
+    const modeSwitch = `<div class="golf-mode-switch" role="group" aria-label="Mini golf game mode"><button type="button" class="${miniGolfMode === "solo" ? "active" : ""}" data-minigolf-mode="solo" aria-pressed="${miniGolfMode === "solo"}">Play vs bots</button><button type="button" class="${miniGolfMode === "friends" ? "active" : ""}" data-minigolf-mode="friends" aria-pressed="${miniGolfMode === "friends"}">Online room</button></div>`;
+    if (miniGolfMode === "friends") return `${modeSwitch}${renderMiniGolfRoom()}`;
+    if (!data.games.miniGolf) data.games.miniGolf = NovexCardGames.createMiniGolfGame(2);
+    const game = data.games.miniGolf;
+    const player = game.players[game.currentPlayer];
+    const hole = NovexCardGames.miniGolfHoles[game.hole - 1];
+    const parTotal = NovexCardGames.miniGolfHoles.slice(0, game.hole).reduce((sum, entry) => sum + entry.par, 0);
+    const scoreRows = game.players.map((entry) => {
+      const holeScore = entry.scores[game.hole - 1] || (entry.holed && game.hole === 9 ? entry.holeStrokes : "—");
+      const relative = entry.scores.reduce((sum, score, index) => sum + score - NovexCardGames.miniGolfHoles[index].par, 0);
+      return `<article class="golf-player ${entry.human ? "golf-you" : ""} ${entry.id === player?.id && game.status === "playing" ? "golf-turn" : ""}"><span class="golf-player-avatar">${entry.human ? "◉" : "✦"}</span><div><strong>${escapeHtml(entry.name)}</strong><small>${entry.holed ? "HOLED OUT" : entry.id === player?.id ? "YOUR TURN" : `${Math.round(entry.remaining)} m to cup`}</small></div><b>${entry.total} <small>${relative > 0 ? `+${relative}` : relative === 0 ? "E" : relative}</small></b><span class="golf-hole-score">${holeScore}</span></article>`;
+    }).join("");
+    return `${modeSwitch}<section class="mini-golf-panel panel">
+      <div class="golf-course-head"><div><span class="section-code">NOVEX LINKS / HOLE ${String(game.hole).padStart(2, "0")} OF 09</span><h2>${game.status === "finished" ? "Course complete." : "Aim. Putt. Play again."}</h2><p>${game.status === "finished" ? `${escapeHtml(game.players.find((entry) => entry.id === game.winner)?.name || "A player")} wins with ${game.players.find((entry) => entry.id === game.winner)?.total ?? 0} strokes.` : "A quick, friendly mini-golf course. Choose the angle and power of every shot; bots play their turns automatically."}</p></div><div class="golf-course-score"><span>HOLE PAR</span><strong>${hole.par}</strong><small>COURSE PAR ${parTotal + NovexCardGames.miniGolfHoles.slice(game.hole).reduce((sum, entry) => sum + entry.par, 0)}</small></div></div>
+      <div class="golf-play-layout"><div class="golf-green" aria-label="Mini-golf course"><div class="golf-course-line"><span class="golf-ball" style="--golf-progress:${game.status === "playing" ? Math.max(4, Math.min(92, 100 - player.remaining / hole.distance * 100)) : 100}%">●</span><span class="golf-cup">◎</span><i class="golf-bunker bunker-one"></i><i class="golf-bunker bunker-two"></i><i class="golf-obstacle"></i></div><div class="golf-distance"><span>TEE</span><strong>${game.status === "playing" ? `${Math.round(player.remaining)} m` : "PUTTED"}</strong><span>THE CUP</span></div><div class="golf-last-shot" role="status">✦ ${escapeHtml(game.lastShot)}</div></div>
+        <div class="golf-scorecard"><div class="section-heading"><div><span class="section-code">THE FLIGHT / SCORECARD</span><h3>Players</h3></div><span class="golf-par">PAR ${parTotal}</span></div><div class="golf-player-list">${scoreRows}</div></div></div>
+      ${game.status === "playing" && player?.human ? `<form id="mini-golf-shot-form" class="golf-controls"><label class="golf-range"><span>SHOT POWER <output id="golf-power-value">55</output>%</span><input name="power" type="range" min="1" max="100" value="55"></label><label class="golf-range"><span>AIM ANGLE <output id="golf-angle-value">0</output>°</span><input name="angle" type="range" min="-45" max="45" value="0"></label><button class="button button-primary" type="submit">Take your shot ↗</button></form>` : game.status === "playing" ? `<div class="golf-bot-turn"><span class="live-dot"></span> ${escapeHtml(player?.name || "A bot")} is lining up a shot…</div>` : `<div class="golf-complete"><span>✦</span><strong>Round saved locally.</strong><p>Play another course to chase a lower score.</p></div>`}
+      <div class="golf-footer"><span>YOUR TOTAL · ${game.players[0].total} STROKES</span><label class="bot-picker"><span>OPPONENTS</span><select id="mini-golf-bot-count" aria-label="Number of mini-golf bots">${[1, 2, 3].map((count) => `<option value="${count}" ${game.botCount === count ? "selected" : ""}>${count} ${count === 1 ? "bot" : "bots"}</option>`).join("")}</select></label><button type="button" class="button button-outline" data-action="new-mini-golf">${game.status === "finished" ? "Play again ↻" : "New course ↻"}</button></div>
+      <details class="golf-rules"><summary>How scoring works</summary><p>Make each putt in as few strokes as possible. Each hole has a par and a maximum stroke limit. Lowest total after nine holes wins; choose a power near the remaining distance and keep your angle close to straight for a clean roll.</p></details>
+    </section>`;
+  }
+
+  function renderMiniGolfRoom() {
+    const { room, loading, error } = miniGolfRoomState;
+    const setupMessage = supabaseSetupMessage();
+    const notice = error
+      ? `<div class="multiplayer-notice error" role="alert">${escapeHtml(error)}</div>`
+      : setupMessage ? `<div class="multiplayer-notice" role="status">${escapeHtml(setupMessage)}<small>Run the latest <code>supabase/setup.sql</code> to enable secure rooms.</small></div>` : "";
+    if (!room) {
+      const inviteCode = new URLSearchParams(window.location.search).get("golf") || "";
+      return `<section class="golf-room-lobby panel"><span class="section-code">NINE HOLES / PLAY WITH FRIENDS</span><h2>Bring your crew to the green.</h2><p>Create a private course, share its room code, or join a friend's table. The host can add bots to fill any open seats.</p>${notice}<div class="golf-room-forms"><form id="minigolf-host-form"><label class="setting-field"><span>YOUR PLAYER NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><button class="button button-primary" type="submit" ${setupMessage || loading ? "disabled" : ""}>${loading ? "Connecting…" : "Create room →"}</button></form><form id="minigolf-join-form"><label class="setting-field"><span>YOUR PLAYER NAME</span><input name="displayName" maxlength="24" value="${escapeHtml(goFishDisplayName())}" required></label><label class="setting-field"><span>ROOM CODE</span><input name="code" maxlength="6" pattern="[A-Za-z0-9]{6}" value="${escapeHtml(inviteCode)}" placeholder="ABC123" required></label><button class="button button-outline" type="submit" ${setupMessage || loading ? "disabled" : ""}>Join a room ↗</button></form></div><p class="friend-privacy-note">Room membership, turn order, scores, and bot shots are validated in Supabase; only your display name is shared.</p></section>`;
+    }
+    const user = multiplayerState.user;
+    const currentPlayer = room.players.find((player) => player.seat === room.current_turn);
+    const isHost = room.host_id === user?.id;
+    const isCurrentPlayer = currentPlayer?.user_id === user?.id;
+    const totalPar = NovexCardGames.miniGolfHoles.reduce((sum, hole) => sum + hole.par, 0);
+    const players = room.players.map((player) => {
+      const total = player.scores.reduce((sum, score) => sum + Number(score), 0);
+      const par = player.scores.reduce((sum, score, index) => sum + Number(score) - NovexCardGames.miniGolfHoles[index].par, 0);
+      return `<article class="golf-player ${player.user_id === user?.id ? "golf-you" : ""} ${player.seat === room.current_turn && room.status === "playing" ? "golf-turn" : ""}"><span class="golf-player-avatar">${player.is_bot ? "✦" : escapeHtml(player.display_name.slice(0, 1).toUpperCase())}</span><div><strong>${escapeHtml(player.display_name)}${player.user_id === user?.id ? " (you)" : ""}</strong><small>${player.is_bot ? "BOT OPPONENT" : `PLAYER · SEAT ${player.seat}`}</small></div><b>${total} <small>${par > 0 ? `+${par}` : par === 0 ? "E" : par}</small></b><span class="golf-hole-score">${player.scores[room.hole - 1] || (player.holed ? player.hole_strokes : "—")}</span></article>`;
+    }).join("");
+    return `<section class="mini-golf-panel panel"><div class="golf-course-head"><div><span class="section-code">${room.status === "lobby" ? "WAITING ROOM" : room.status === "finished" ? "COURSE COMPLETE" : `ONLINE TABLE / HOLE ${String(room.hole).padStart(2, "0")} OF 09`}</span><h2>Room ${escapeHtml(room.code)}</h2><p>${room.status === "lobby" ? "Invite friends or add bots, then let the host tee off." : room.status === "finished" ? escapeHtml(room.last_action) : `${escapeHtml(currentPlayer?.display_name || "A player")} is up · ${escapeHtml(room.last_action)}`}</p></div><div class="golf-course-score"><span>COURSE PAR</span><strong>${totalPar}</strong><small>4 PLAYER MAX</small></div></div>${notice}
+      <div class="golf-room-actions"><button type="button" class="button button-outline" data-action="copy-minigolf-link">Copy invite link</button><button type="button" class="button button-quiet" data-action="leave-minigolf-room">Leave room</button></div>
+      <div class="golf-player-list">${players}</div>
+      ${room.status === "lobby" ? `<div class="golf-lobby-actions"><span>${room.players.length}/4 seats · ${room.players.length < 2 ? "need at least one opponent" : "ready for the first tee"}</span>${isHost ? `<label class="bot-picker"><span>FILL WITH BOTS</span><select id="minigolf-room-bot-count" aria-label="Number of bots to add">${[1, 2, 3].map((count) => `<option value="${count}">${count}</option>`).join("")}</select></label><button class="button button-quiet" type="button" data-action="fill-minigolf-bots" ${room.players.length >= 4 ? "disabled" : ""}>Add bots</button><button class="button button-primary" type="button" data-action="start-minigolf-room" ${room.players.length < 2 ? "disabled" : ""}>Start course →</button>` : ""}</div>` : room.status === "playing" ? `<div class="golf-play-layout"><div class="golf-green"><div class="golf-course-line"><span class="golf-ball" style="--golf-progress:${isCurrentPlayer ? Math.max(4, Math.min(92, 100 - currentPlayer.remaining / NovexCardGames.miniGolfHoles[room.hole - 1].distance * 100)) : 8}%">●</span><span class="golf-cup">◎</span><i class="golf-bunker bunker-one"></i><i class="golf-bunker bunker-two"></i><i class="golf-obstacle"></i></div><div class="golf-distance"><span>TEE</span><strong>${isCurrentPlayer ? `${Math.round(currentPlayer.remaining)} m` : `PAR ${NovexCardGames.miniGolfHoles[room.hole - 1].par}`}</strong><span>THE CUP</span></div></div><div class="golf-scorecard"><div class="section-heading"><div><span class="section-code">COURSE STATUS</span><h3>Hole ${room.hole} / 9</h3></div><span class="golf-par">PAR ${NovexCardGames.miniGolfHoles[room.hole - 1].par}</span></div><p class="golf-last-shot">${escapeHtml(room.last_action)}</p></div></div>${isCurrentPlayer ? `<form id="mini-golf-online-shot-form" class="golf-controls"><label class="golf-range"><span>SHOT POWER <output id="golf-power-value">55</output>%</span><input name="power" type="range" min="1" max="100" value="55"></label><label class="golf-range"><span>AIM ANGLE <output id="golf-angle-value">0</output>°</span><input name="angle" type="range" min="-45" max="45" value="0"></label><button class="button button-primary" type="submit">Take your shot ↗</button></form>` : `<div class="golf-bot-turn"><span class="live-dot"></span> Waiting for ${escapeHtml(currentPlayer?.display_name || "the next player")}…</div>`}` : `<div class="golf-complete"><span>✦</span><strong>Round complete.</strong><p>${room.winner_seat ? `${escapeHtml(room.players.find((entry) => entry.seat === room.winner_seat)?.display_name || "Winner")} won the course.` : "No winner was recorded."}</p></div>`}
+      <p class="friend-privacy-note">Room code ${escapeHtml(room.code)} · ${room.players.length} players · Scores and legal turns are enforced by the database.</p></section>`;
   }
 
   function renderCardClub() {
@@ -1535,10 +1759,21 @@ function achievementGrid() {
 }
 
 function renderShop() {
-  const items = SHOP_ITEMS;
+  const search = shopSearch.trim().toLowerCase();
+  const items = SHOP_ITEMS.filter((item) => {
+    const category = item.type === "theme" ? "theme" :
+      ["avatar", "banner", "frame", "title"].includes(item.type) ? "profile" :
+        ["cardBack", "cardDeck", "cardEffect", "tableTheme"].includes(item.type) ? "cards" : "utility";
+    return (shopCategory === "all" || category === shopCategory) &&
+      (!search || `${item.name} ${item.description} ${item.rarity}`.toLowerCase().includes(search));
+  }).sort((a, b) => a.price - b.price || a.name.localeCompare(b.name));
+  const ownedCount = SHOP_ITEMS.filter((item) => data.progression.owned.includes(item.id)).length;
   viewRoot.innerHTML = `
-    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> COSMETIC EXCHANGE / NO REAL-MONEY ITEMS</div><h1>Neon <span>market.</span></h1><p class="lead">Earn credits from learning. Spend them on themes, profile flair, or a streak shield.</p></div><div class="coin-chip large">◈ ${data.progression.credits} CREDITS</div></section>
+    <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> NOVEX EXCHANGE / ${SHOP_ITEMS.length} UNLOCKABLES</div><h1>Neon <span>market.</span></h1><p class="lead">A growing collection of profile looks, card-table upgrades, and useful streak gear. Every item is earned with learning credits.</p></div><div class="coin-chip large">◈ ${data.progression.credits} CREDITS</div></section>
+    <section class="shop-feature panel"><div class="shop-feature-emblem">✧</div><div><span class="section-code">YOUR COLLECTION / ${ownedCount} OF ${SHOP_ITEMS.length}</span><strong>Build a look that feels like yours.</strong><p>Browse by collection, preview each piece, and equip anything you already own at no extra cost.</p></div><button class="button button-outline" type="button" data-nav="profile">View your profile ↗</button></section>
     <div class="shop-note"><span>◇</span><p>Every item uses in-app credits only. No paid currency, random crates, or surprise odds.</p></div>
+    <div class="shop-toolbar"><div class="shop-categories" role="group" aria-label="Shop categories">${SHOP_CATEGORIES.map(([id, label]) => `<button type="button" class="${shopCategory === id ? "active" : ""}" data-shop-category="${id}" aria-pressed="${shopCategory === id}">${label}</button>`).join("")}</div><label class="shop-search"><span aria-hidden="true">⌕</span><input id="shop-search" type="search" value="${escapeHtml(shopSearch)}" placeholder="Search the market" aria-label="Search shop items"></label></div>
+    <div class="shop-results"><span>${items.length} ${items.length === 1 ? "item" : "items"}</span><span>Collection progress · ${Math.round(ownedCount / SHOP_ITEMS.length * 100)}%</span></div>
     <section class="shop-grid">${items.map((item) => {
       const owned = data.progression.owned.includes(item.id);
       const equipped = shopItemEquipped(item);
@@ -1548,8 +1783,8 @@ function renderShop() {
         : equipped ? "EQUIPPED" : owned ? "EQUIP ITEM" : `◈ ${item.price}`;
       const isDisabled = item.type === "freeze" ? !canAfford : equipped || (!owned && !canAfford);
       const icon = item.type === "avatar" ? item.value : item.type === "cardBack" || item.type === "cardDeck" ? "🂠" : item.type === "cardEffect" ? "✧" : item.type === "tableTheme" ? "♣" : item.type === "banner" ? "▰" : item.type === "theme" ? "NV" : item.type === "frame" ? "⌬" : item.type === "freeze" ? "♨" : "✦";
-      return `<article class="shop-item ${owned ? "item-owned" : ""} ${item.rarity === "LEGENDARY" ? "item-legendary" : ""}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><div class="shop-preview preview-${escapeHtml(item.value)}">${escapeHtml(icon)}</div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description)}</p><button class="button ${owned ? "button-quiet" : "button-primary"} shop-buy" data-shop-item="${item.id}" ${isDisabled ? "disabled" : ""}>${action}</button></article>`;
-    }).join("")}</section>`;
+      return `<article class="shop-item ${owned ? "item-owned" : ""} ${item.rarity === "LEGENDARY" ? "item-legendary" : ""}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><div class="shop-preview preview-${escapeHtml(item.value)}">${escapeHtml(icon)}</div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description)}</p><div class="shop-item-meta"><span>${owned ? "IN COLLECTION" : item.type.replace(/([A-Z])/g, " $1").toUpperCase()}</span><strong>${owned && item.type !== "freeze" ? "Owned" : `◈ ${item.price}`}</strong></div><button class="button ${owned ? "button-quiet" : "button-primary"} shop-buy" data-shop-item="${item.id}" ${isDisabled ? "disabled" : ""}>${action}</button></article>`;
+    }).join("") || `<div class="shop-empty panel"><span>⌕</span><strong>No items match that search.</strong><p>Try a different name or collection.</p><button class="text-button" type="button" data-shop-clear>Clear filters</button></div>`}</section>`;
 }
 
 function shopItemEquipped(item) {
@@ -1609,8 +1844,10 @@ function spinDailyWheel() {
   const games = data.games;
   const today = todayKey();
   if (games.dailySpinDate === today) return showToast("TODAY'S WHEEL REWARD IS ALREADY CLAIMED.");
-  let ticket = Math.random() * DAILY_WHEEL_PRIZES.reduce((sum, prize) => sum + prize.weight, 0);
-  const prize = DAILY_WHEEL_PRIZES.find((entry) => (ticket -= entry.weight) < 0) || DAILY_WHEEL_PRIZES[0];
+  let ticket = Math.random() * DAILY_WHEEL_PRIZES.reduce((sum, entry) => sum + entry.weight, 0);
+  let prizeIndex = DAILY_WHEEL_PRIZES.findIndex((entry) => (ticket -= entry.weight) < 0);
+  if (prizeIndex < 0) prizeIndex = 0;
+  let prize = DAILY_WHEEL_PRIZES[prizeIndex];
   let reward = prize.label;
   if (prize.cosmetic) {
     const rareItems = SHOP_ITEMS.filter((item) =>
@@ -1630,9 +1867,14 @@ function spinDailyWheel() {
   games.dailySpinDate = today;
   games.dailySpinReward = reward;
   wheelSpinning = true;
+  const angleBeforePrize = DAILY_WHEEL_PRIZES.slice(0, prizeIndex).reduce((sum, entry) => sum + entry.weight, 0);
+  const prizeCenter = angleBeforePrize + prize.weight / 2;
+  const angle = 360 * (1 - prizeCenter / DAILY_WHEEL_PRIZES.reduce((sum, entry) => sum + entry.weight, 0));
   persist();
   updateHeader();
   renderProfile();
+  const wheel = viewRoot.querySelector(".daily-wheel");
+  if (wheel) requestAnimationFrame(() => wheel.style.setProperty("--wheel-end-angle", `${1800 + angle}deg`));
   window.setTimeout(() => {
     wheelSpinning = false;
     if (activeView === "profile") renderProfile();
@@ -1654,9 +1896,28 @@ function recordCardGameResult(gameType, won) {
     if (gameType === "freecell") games.freecellWins += 1;
     if (gameType === "blackjack") games.blackjackWins += 1;
     if (gameType === "gofish") games.goFishWins += 1;
+    if (gameType === "minigolf") games.miniGolfWins += 1;
   } else games.currentWinStreak = 0;
   persist();
-  if (cardClubState.joined && !supabaseSetupMessage()) void submitCardClubResult(gameType, won);
+  if (["solitaire", "freecell", "blackjack", "gofish"].includes(gameType) &&
+      cardClubState.joined && !supabaseSetupMessage()) void submitCardClubResult(gameType, won);
+}
+
+function takeMiniGolfShot(formElement) {
+  const game = data.games.miniGolf;
+  const form = new FormData(formElement);
+  const power = Number(form.get("power"));
+  const angle = Number(form.get("angle"));
+  const wasFinished = game?.status === "finished";
+  if (!NovexCardGames.playMiniGolfShot(game, { power, angle })) {
+    return showToast("Choose a valid shot power and angle.", true);
+  }
+  if (!wasFinished && game.status === "finished") {
+    data.games.miniGolfGames += 1;
+    recordCardGameResult("minigolf", game.winner === "you");
+  }
+  persist();
+  renderGames();
 }
 
 async function submitCardClubResult(gameType, won) {
@@ -1754,10 +2015,10 @@ function renderProfile() {
   viewRoot.innerHTML = `
     <section class="page-heading"><div><div class="eyebrow"><span class="pulse"></span> OPERATOR ID / ${escapeHtml(currentAccount?.username || "")}</div><h1>Your personal <span>signal.</span></h1><p class="lead">Shape your profile, track your evolution, and spend skill points on your learning style.</p></div><button class="button button-quiet" data-nav="shop">Visit neon market →</button></section>
     <section class="profile-hero ${streakClass()} banner-${escapeHtml(progression.profile.banner)}"><div class="profile-avatar profile-avatar-large">${escapeHtml(progression.profile.avatar || "⌬")}</div><div class="profile-identity"><span class="section-code">LEVEL ${level} OPERATOR</span><h2>${escapeHtml(progression.profile.displayName || currentAccount?.username || "Operator")}</h2><p>${escapeHtml(progression.profile.title || titleForLevel(level))}</p><div class="profile-xp-track"><i style="width:${Math.round(levelProgress() / 150 * 100)}%"></i></div><small>${progression.xp} XP TOTAL · FAVORITE: ${escapeHtml(FAVORITE_GAMES.find(([id]) => id === progression.profile.favoriteGame)?.[1] || "Klondike Solitaire")}</small></div><div class="profile-streak"><span>♨</span><strong>${streak}</strong><small>DAY STREAK</small><em>RECORD ${progression.bestStreak}</em></div></section>
-    <section class="profile-stats"><article><strong>${data.games.totalGamesPlayed}</strong><span>GAMES PLAYED</span></article><article><strong>${data.games.highestWinStreak}</strong><span>BEST WIN STREAK</span></article><article><strong>${data.games.solitaireWins + data.games.freecellWins + data.games.blackjackWins + data.games.goFishWins}</strong><span>GAMES WON</span></article><article><strong>${collection.length}</strong><span>COSMETICS OWNED</span></article></section>
+    <section class="profile-stats"><article><strong>${data.games.totalGamesPlayed}</strong><span>GAMES PLAYED</span></article><article><strong>${data.games.highestWinStreak}</strong><span>BEST WIN STREAK</span></article><article><strong>${data.games.solitaireWins + data.games.freecellWins + data.games.blackjackWins + data.games.goFishWins + data.games.miniGolfWins}</strong><span>GAMES WON</span></article><article><strong>${collection.length}</strong><span>COSMETICS OWNED</span></article></section>
     <div class="profile-grid"><section class="panel panel-main"><div class="section-heading"><div><span class="section-code">OPERATOR CUSTOMIZATION</span><h2>Edit profile</h2></div></div><form id="profile-form" class="profile-form"><label class="setting-field"><span>DISPLAY NAME</span><input name="displayName" maxlength="28" value="${escapeHtml(progression.profile.displayName || "")}" placeholder="${escapeHtml(currentAccount?.username || "Operator")}"></label><label class="setting-field"><span>AVATAR</span><select name="avatar">${availableAvatars.map((avatar) => `<option value="${escapeHtml(avatar)}" ${progression.profile.avatar === avatar ? "selected" : ""}>${escapeHtml(avatar)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE TITLE</span><select name="title"><option value="">${escapeHtml(titleForLevel(level))} (default)</option>${SHOP_ITEMS.filter((item) => item.type === "title" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.title === item.value ? "selected" : ""}>${escapeHtml(item.value)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE FRAME</span><select name="frame"><option value="">Default frame</option>${SHOP_ITEMS.filter((item) => item.type === "frame" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.frame === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="setting-field"><span>PROFILE BANNER</span><select name="banner"><option value="default">Default banner</option>${SHOP_ITEMS.filter((item) => item.type === "banner" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.banner === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="setting-field"><span>FAVORITE GAME</span><select name="favoriteGame">${FAVORITE_GAMES.map(([id, name]) => `<option value="${id}" ${progression.profile.favoriteGame === id ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label><label class="setting-field"><span>FAVORITE CARD DECK</span><select name="favoriteDeck"><option value="classic">Classic</option>${SHOP_ITEMS.filter((item) => item.type === "cardDeck" && owned.has(item.id)).map((item) => `<option value="${escapeHtml(item.value)}" ${progression.profile.favoriteDeck === item.value ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><button class="button button-primary" type="submit">SAVE PROFILE →</button></form></section>
     <section class="panel skill-panel"><div class="section-heading"><div><span class="section-code">NEURAL SKILL TREE</span><h2>Invest points</h2></div><span class="skill-points">${progression.skillPoints} SP</span></div><p class="skill-copy">Earn one point per level. Each path has five permanent learning bonuses.</p><div class="skill-list">${Object.entries({ memory: ["MEMORY", "+2 seconds to Memory Rush per node"], focus: ["FOCUS", "+1 minute to timed tests per node"], speed: ["SPEED", "+5 seconds and +3 XP in Speed Run per node"], intelligence: ["INTELLIGENCE", "+2 XP per correct answer per node"] }).map(([key, [label, benefit]]) => `<div class="skill-row"><div><strong>${label}</strong><small>${progression.skills[key]} / 5 nodes · ${benefit}</small></div><button class="skill-node" data-skill="${key}" ${progression.skillPoints <= 0 || progression.skills[key] >= 5 ? "disabled" : ""}>＋</button></div>`).join("")}</div></section>
-    <section class="panel daily-wheel-panel"><div class="section-heading"><div><span class="section-code">DAILY DROP / FREE ONCE A DAY</span><h2>Spin the wheel</h2></div><span class="rarity rarity-legendary">RARE PRIZES</span></div><div class="wheel-layout"><div class="daily-wheel ${wheelSpinning ? "spinning" : ""}"><span>25</span><span>40</span><span>60</span><span>100</span><span>✦</span><i>◈</i></div><div class="wheel-copy">${data.games.dailySpinDate === todayKey() ? `<strong>Today's drop: ${escapeHtml(data.games.dailySpinReward || "Reward claimed")}</strong><p>Come back tomorrow for another free spin.</p>` : `<strong>A little luck, once a day.</strong><p>35% · 25 credits · 25% · 40 credits · 20% · 60 credits · 12% · 100 credits · 8% · rare cosmetic.</p>`}<button class="button button-primary" type="button" data-action="spin-daily-wheel" ${!spinAvailable || wheelSpinning ? "disabled" : ""}>${wheelSpinning ? "Spinning…" : spinAvailable ? "Spin for today's reward →" : "Already claimed today"}</button></div></div></section>
+    <section class="panel daily-wheel-panel"><div class="section-heading"><div><span class="section-code">DAILY DROP / FREE ONCE A DAY</span><h2>Spin the wheel</h2></div><span class="rarity rarity-legendary">RARE PRIZES</span></div><div class="wheel-layout"><div class="wheel-stage"><span class="wheel-pointer" aria-hidden="true">▼</span><div class="daily-wheel ${wheelSpinning ? "spinning" : ""}" role="img" aria-label="Prize wheel with five weighted rewards"><span>25</span><span>40</span><span>60</span><span>100</span><span>✦</span><i>◈</i></div></div><div class="wheel-copy">${data.games.dailySpinDate === todayKey() ? `<strong>Today's drop: ${escapeHtml(data.games.dailySpinReward || "Reward claimed")}</strong><p>Come back tomorrow for another free spin.</p>` : `<strong>A little luck, once a day.</strong><p>35% · 25 credits · 25% · 40 credits · 20% · 60 credits · 12% · 100 credits · 8% · rare cosmetic.</p>`}<button class="button button-primary" type="button" data-action="spin-daily-wheel" ${!spinAvailable || wheelSpinning ? "disabled" : ""}>${wheelSpinning ? "Spinning…" : spinAvailable ? "Spin for today's reward →" : "Already claimed today"}</button></div></div></section>
     <section class="panel collection-panel"><div class="section-heading"><div><span class="section-code">YOUR COLLECTION / ${collection.length} ITEMS</span><h2>Showcase</h2></div><small>Choose up to 4 favorites</small></div><div class="collection-showcase">${showcase.length ? showcase.map((id) => collection.find((item) => item.id === id)).filter(Boolean).map((item) => `<span class="collection-chip rarity-${item.rarity.toLowerCase()}">${escapeHtml(item.name)}</span>`).join("") : `<span class="empty-note">Pick a few owned pieces to show off on your profile.</span>`}</div><div class="collection-items">${collection.map((item) => `<button type="button" class="collection-item ${showcase.includes(item.id) ? "in-showcase" : ""}" data-showcase-item="${item.id}" aria-pressed="${showcase.includes(item.id)}" title="${escapeHtml(item.description)}"><span class="rarity rarity-${item.rarity.toLowerCase()}">${item.rarity}</span><strong>${escapeHtml(item.name)}</strong><small>${showcase.includes(item.id) ? "SHOWCASED · click to remove" : "Click to showcase"}</small></button>`).join("") || `<span class="empty-note">Visit the market to collect your first cosmetic.</span>`}</div></section>
     <section class="panel trophy-panel"><div class="section-heading"><div><span class="section-code">TROPHY ROOM</span><h2>Unlocked achievements</h2></div><button class="text-button" data-nav="arcade">All achievements ↗</button></div>${achievementGrid()}</section></div>`;
 }
@@ -2052,6 +2313,16 @@ async function restoreBackup(file) {
     activeDeckId = data.decks[0]?.id || "";
     updateHeader();
     return;
+  }
+  const shopCategoryButton = event.target.closest("[data-shop-category]");
+  if (shopCategoryButton) {
+    shopCategory = shopCategoryButton.dataset.shopCategory;
+    return renderShop();
+  }
+  if (event.target.closest("[data-shop-clear]")) {
+    shopCategory = "all";
+    shopSearch = "";
+    return renderShop();
   }
   updateHeader();
   setView("dashboard");
@@ -2933,6 +3204,12 @@ viewRoot.addEventListener("click", (event) => {
     renderGames();
     return;
   }
+  const miniGolfModeButton = event.target.closest("[data-minigolf-mode]");
+  if (miniGolfModeButton) {
+    miniGolfMode = miniGolfModeButton.dataset.minigolfMode;
+    renderGames();
+    return;
+  }
   const cardAction = event.target.closest("[data-action='solitaire-stock']");
   if (cardAction) {
     const wasWon = data.games.solitaire.won;
@@ -2992,6 +3269,11 @@ viewRoot.addEventListener("click", (event) => {
     data.games.blackjack = NovexCardGames.createBlackjackGame(botCount);
     persist();
     renderGames();
+  } else if (action === "new-mini-golf") {
+    const botCount = Number(viewRoot.querySelector("#mini-golf-bot-count")?.value) || 2;
+    data.games.miniGolf = NovexCardGames.createMiniGolfGame(botCount);
+    persist();
+    renderGames();
   } else if (action === "blackjack-hit" || action === "blackjack-stand") {
     const game = data.games.blackjack;
     if (game?.status !== "playing") return;
@@ -3033,6 +3315,14 @@ viewRoot.addEventListener("click", (event) => {
     renderBudget();
   } else if (action === "start-gofish") {
     void startGoFish();
+  } else if (action === "fill-minigolf-bots") {
+    void miniGolfRoomAction("fill", viewRoot.querySelector("#minigolf-room-bot-count")?.value || 1);
+  } else if (action === "start-minigolf-room") {
+    void miniGolfRoomAction("start");
+  } else if (action === "fill-gofish-bots") {
+    void fillGoFishBots();
+  } else if (action === "leave-minigolf-room") {
+    void leaveMiniGolfRoom();
   } else if (action === "end-gofish") {
     void endGoFishGame();
   } else if (action === "leave-room") {
@@ -3046,6 +3336,16 @@ viewRoot.addEventListener("click", (event) => {
       .catch((error) => {
         console.error("Could not copy the invite link.", error);
         showToast(`Share room code ${multiplayerState.room.code} with your friends.`, true);
+      });
+  } else if (action === "copy-minigolf-link") {
+    const url = new URL(window.location.href);
+    url.searchParams.set("golf", miniGolfRoomState.room.code);
+    if (!navigator.clipboard?.writeText) return showToast(`Share room code ${miniGolfRoomState.room.code} with your friends.`, true);
+    navigator.clipboard.writeText(url.toString())
+      .then(() => showToast("MINI-GOLF INVITE LINK COPIED"))
+      .catch((error) => {
+        console.error("Could not copy the mini-golf invite link.", error);
+        showToast(`Share room code ${miniGolfRoomState.room.code} with your friends.`, true);
       });
   } else if (action === "new-deck") openCreateDeck();
   else if (action === "boss-fight") startBossFight();
@@ -3114,6 +3414,22 @@ viewRoot.addEventListener("click", (event) => {
   }
 });
 
+viewRoot.addEventListener("input", (event) => {
+  if (event.target.id === "shop-search") {
+    shopSearch = event.target.value;
+    renderShop();
+    const search = viewRoot.querySelector("#shop-search");
+    search?.focus();
+    search?.setSelectionRange(shopSearch.length, shopSearch.length);
+  } else if (event.target.name === "power") {
+    const output = viewRoot.querySelector("#golf-power-value");
+    if (output) output.value = event.target.value;
+  } else if (event.target.name === "angle") {
+    const output = viewRoot.querySelector("#golf-angle-value");
+    if (output) output.value = event.target.value;
+  }
+});
+
 viewRoot.addEventListener("change", (event) => {
   if (event.target.matches("[data-gofish-timer]")) {
     void setGoFishTimer(event.target.value);
@@ -3151,6 +3467,10 @@ viewRoot.addEventListener("change", (event) => {
   } else if (event.target.id === "pref-canvas-height") {
     settings.canvasHeight = Number(event.target.value);
     persist();
+  } else if (event.target.id === "mini-golf-bot-count") {
+    data.games.miniGolf = NovexCardGames.createMiniGolfGame(Number(event.target.value));
+    persist();
+    renderGames();
   }
 });
 
@@ -3230,6 +3550,25 @@ document.addEventListener("submit", (event) => {
     const displayName = String(form.get("displayName") || "").trim();
     if (!/^[a-zA-Z0-9]{6}$/.test(code) || !displayName) return showToast("Enter your name and a six-character room code.", true);
     void joinGoFish(code, displayName.slice(0, 24));
+  } else if (event.target.id === "minigolf-host-form") {
+    event.preventDefault();
+    const displayName = String(new FormData(event.target).get("displayName") || "").trim();
+    if (!displayName) return showToast("Add a name for your game room.", true);
+    void hostMiniGolfRoom(displayName);
+  } else if (event.target.id === "minigolf-join-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const code = String(form.get("code") || "").trim();
+    const displayName = String(form.get("displayName") || "").trim();
+    if (!/^[a-zA-Z0-9]{6}$/.test(code) || !displayName) return showToast("Enter your name and a six-character room code.", true);
+    void joinMiniGolfRoom(code, displayName);
+  } else if (event.target.id === "mini-golf-online-shot-form") {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const power = Number(form.get("power"));
+    const angle = Number(form.get("angle"));
+    if (!Number.isInteger(power) || !Number.isFinite(angle)) return showToast("Choose a valid shot power and angle.", true);
+    void miniGolfRoomAction("shot", { power, angle });
   } else if (event.target.id === "gofish-ask-form") {
     event.preventDefault();
     const form = new FormData(event.target);
@@ -3237,6 +3576,9 @@ document.addEventListener("submit", (event) => {
     const rank = Number(form.get("rank"));
     if (!target || !Number.isInteger(rank)) return showToast("Choose a player and a rank from your hand.", true);
     void askGoFish(target, rank);
+  } else if (event.target.id === "mini-golf-shot-form") {
+    event.preventDefault();
+    takeMiniGolfShot(event.target);
   } else if (event.target.id === "pair-form") {
     event.preventDefault();
     const form = new FormData(event.target);
